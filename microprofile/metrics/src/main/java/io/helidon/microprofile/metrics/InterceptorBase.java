@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -12,168 +12,107 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
  */
-
 package io.helidon.microprofile.metrics;
 
 import java.lang.annotation.Annotation;
-import java.lang.reflect.AnnotatedElement;
-import java.lang.reflect.Member;
 import java.util.Map;
-import java.util.Optional;
-import java.util.SortedMap;
-import java.util.function.Function;
+import java.util.function.Consumer;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
-import javax.enterprise.context.Dependent;
+import javax.inject.Inject;
 import javax.interceptor.AroundConstruct;
 import javax.interceptor.AroundInvoke;
 import javax.interceptor.InvocationContext;
 
+import io.helidon.microprofile.metrics.MetricsCdiExtension.MetricWorkItem;
+
 import org.eclipse.microprofile.metrics.Metric;
+import org.eclipse.microprofile.metrics.MetricID;
 import org.eclipse.microprofile.metrics.MetricRegistry;
 
-import static io.helidon.microprofile.metrics.MetricUtil.getMetricName;
-import static io.helidon.microprofile.metrics.MetricUtil.lookupAnnotation;
-
 /**
- * Common methods for interceptors.
+ * Basic interceptor implementation which supports pre-invoke updates to metrics.
  * <p>
- * Concrete subclasses implement:
- * <ul>
- * <li>{@code @Inject}ed constructor which accepts a {@code MetricRegistry} and
- * invokes the constructor for this class, passing:
- * <ul>
- * <li>the registry,
- * <li>the {@code Class} object for the specific metrics annotation it handles,
- * <li>a {@code Function} that accepts an instance of the annotation and returns
- * the name for that instance of the annotation,
- * <li>a {@code Function} that accepts an instance of the annotation and returns
- * whether the name is absolute or not,
- * <li>a {@code Function} that accepts an instance of {@code MetricRegistry} and
- * returns a map of the metrics of the relevant type.
- * </ul>
- * For example, the constructor for the implementation that handles
- * {@code Metered} might use this:
- * <pre>
- * {@code
- *     super(registry,
- *             Metered.class,
- *             Metered::name,
- *             Metered::absolute,
- *             MetricRegistry::getMeters);
- * }
- * </pre>
- * <li>{@link #prepareAndInvoke} to perform any steps before invoking the intercepted
- * method and then invoke that method,
- * <li>and, optionally, {@link #postInvoke} to perform any steps after invoking
- * the intercepted method.
- * </ul>
+ *     Concrete subclasses implement {@link #preInvoke(Metric)} which takes metric-specific action on a metric before the
+ *     intercepted constructor or method runs.
+ * </p>
+ * @param <M> type of metrics the interceptor handles
  */
-@Dependent
-abstract class InterceptorBase<T extends Metric, A extends Annotation> {
+abstract class InterceptorBase<M extends Metric> {
 
-    private final MetricRegistry registry;
-    private final Class<A> annotationClass;
-    private final Function<A, String> nameFunction;
-    private final Function<A, Boolean> isAbsoluteFunction;
-    private final Function<MetricRegistry, SortedMap<String, T>> metricsMapFunction;
-    private final String metricTypeName;
-    InterceptorBase(MetricRegistry registry,
-                    Class<A> annotationClass,
-                    Function<A, String> nameFunction,
-                    Function<A, Boolean> isAbsoluteFunction,
-                    Function<MetricRegistry, SortedMap<String, T>> metricsMapFunction,
-                    String metricTypeName) {
-        this.registry = registry;
-        this.annotationClass = annotationClass;
-        this.nameFunction = nameFunction;
-        this.isAbsoluteFunction = isAbsoluteFunction;
-        this.metricsMapFunction = metricsMapFunction;
-        this.metricTypeName = metricTypeName;
+    private static final Logger LOGGER = Logger.getLogger(InterceptorBase.class.getName());
+
+    private final Class<? extends Annotation> annotationType;
+    private final Class<M> metricType;
+
+    @Inject
+    private MetricsCdiExtension extension;
+
+    @Inject
+    private MetricRegistry registry;
+
+    private Map<MetricID, Metric> metricsForVerification;
+
+    enum ActionType {
+        PREINVOKE("preinvoke"), COMPLETE("complete");
+
+        private final String label;
+
+        ActionType(String label) {
+            this.label = label;
+        }
+
+        public String toString() {
+            return label;
+        }
     }
 
-    protected <T> Optional<T> getMetric(Map<String, T> metricMap, String metricName) {
-        return Optional.ofNullable(metricMap.get(metricName));
+    InterceptorBase(Class<? extends Annotation> annotationType, Class<M> metricType) {
+        this.annotationType = annotationType;
+        this.metricType = metricType;
+    }
+
+    Class<? extends Annotation> annotationType() {
+        return annotationType;
+    }
+
+    Map<MetricID, Metric> metricsForVerification() {
+        if (metricsForVerification == null) {
+            metricsForVerification = registry.getMetrics();
+        }
+        return metricsForVerification;
     }
 
     @AroundConstruct
-    private Object aroundConstructor(InvocationContext context) throws Exception {
-        return called(context, context.getConstructor());
+    Object aroundConstruct(InvocationContext context) throws Exception {
+        InterceptionTargetInfo<MetricWorkItem> interceptionTargetInfo = extension.interceptInfo(context.getConstructor());
+        return interceptionTargetInfo.runner().run(context, interceptionTargetInfo.workItems(annotationType), this::preInvoke);
     }
 
     @AroundInvoke
-    private Object aroundMethod(InvocationContext context) throws Exception {
-        return called(context, context.getMethod());
+    Object aroundInvoke(InvocationContext context) throws Exception {
+        InterceptionTargetInfo<MetricWorkItem> interceptionTargetInfo = extension.interceptInfo(context.getMethod());
+        return interceptionTargetInfo.runner().run(context, interceptionTargetInfo.workItems(annotationType), this::preInvoke);
     }
 
-    /**
-     * Returns class for this context. There is no target for constructors.
-     *
-     * @param context The context.
-     * @param element Method or constructor.
-     * @param <E>     Method or constructor type.
-     * @return The class.
-     */
-    protected <E extends Member & AnnotatedElement> Class<?> getClass(InvocationContext context, E element) {
-        return context.getTarget() != null ? MetricsCdiExtension.getRealClass(context.getTarget()) : element.getDeclaringClass();
+    void preInvoke(InvocationContext context, MetricWorkItem workItem) {
+        invokeVerifiedAction(context, workItem, this::preInvoke, ActionType.PREINVOKE);
     }
 
-    private <E extends Member & AnnotatedElement> Object called(InvocationContext context, E element) throws Exception {
-        MetricUtil.LookupResult<A> lookupResult = lookupAnnotation(element, annotationClass, getClass(context, element));
-        if (lookupResult != null) {
-            A annot = lookupResult.getAnnotation();
-            String metricName = getMetricName(element, getClass(context, element), lookupResult.getType(),
-                                              nameFunction.apply(annot),
-                                              isAbsoluteFunction.apply(annot));
-            Optional<T> metric = getMetric(metricsMapFunction.apply(registry), metricName);
-            T metricInstance = metric.orElseGet(() -> {
-                throw new IllegalStateException("No " + metricTypeName + " with name [" + metricName
-                                                        + "] found in registry [" + registry + "]");
-            });
-            Exception ex = null;
-            try {
-                return prepareAndInvoke(metricInstance, annot, context);
-            } catch (Exception e) {
-                ex = e;
-                throw e;
-            } finally {
-                postInvoke(metricInstance, annot, context, ex);
-            }
+    void invokeVerifiedAction(InvocationContext context, MetricWorkItem workItem, Consumer<M> action, ActionType actionType) {
+        if (!metricsForVerification().containsKey(workItem.metricID())) {
+            throw new IllegalStateException("Attempt to use previously-removed metric" + workItem.metricID());
         }
-        return context.proceed();
+        Metric metric = workItem.metric();
+        LOGGER.log(Level.FINEST, () -> String.format(
+                "%s (%s) is accepting %s %s for processing on %s triggered by @%s",
+                getClass().getSimpleName(), actionType, workItem.metric().getClass().getSimpleName(), workItem.metricID(),
+                context.getMethod() != null ? context.getMethod() : context.getConstructor(), annotationType.getSimpleName()));
+        action.accept(metricType.cast(metric));
     }
 
-    /**
-     * Performs any logic to be run before the intercepted method is invoked and
-     * then invokes {@code context.proceed()}, returning the value returned by
-     * from {@code context.proceed()}.
-     *
-     * @param metricInstance metric being accessed
-     * @param annotation     annotation instance for the metric
-     * @param context        invocation context for the intercepted method call
-     * @return return value from invoking the intercepted method
-     * @throws Exception in case of errors invoking the intercepted method or
-     *                   performing the pre-invoke processing
-     */
-    protected abstract Object prepareAndInvoke(T metricInstance,
-                                               A annotation,
-                                               InvocationContext context) throws Exception;
-
-    /**
-     * Performs any logic to be run after the intercepted method has run.
-     * <p>
-     * This method is invoked regardless of whether the intercepted method threw an exception.
-     *
-     * @param metricInstance metric being accessed
-     * @param annotation     annotation instance for the metric
-     * @param context        invocation context for the intercepted method call
-     * @param ex             any exception caught when invoking {@code prepareAndInvoke};
-     *                       null if that method threw no exception
-     * @throws Exception in case of errors performing the post-call logic
-     */
-    protected void postInvoke(T metricInstance,
-                              A annotation,
-                              InvocationContext context,
-                              Exception ex) throws Exception {
-    }
+    abstract void preInvoke(M metric);
 }

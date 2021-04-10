@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,24 +16,28 @@
 
 package io.helidon.tests.apps.bookstore.se;
 
-import javax.json.JsonObject;
 import java.util.Collection;
+
+import javax.json.JsonObject;
 
 import io.helidon.common.http.Http;
 import io.helidon.config.Config;
-import io.helidon.tests.apps.bookstore.mp.Book;
-import io.helidon.tests.apps.bookstore.mp.BookStore;
+import io.helidon.tests.apps.bookstore.common.Book;
+import io.helidon.tests.apps.bookstore.common.BookStore;
 import io.helidon.webserver.Routing;
 import io.helidon.webserver.ServerRequest;
 import io.helidon.webserver.ServerResponse;
 import io.helidon.webserver.Service;
 
+/**
+ * Implements book service.
+ */
 public class BookService implements Service {
 
-    private static final BookStore bookStore = new BookStore();
+    private static final BookStore BOOK_STORE = new BookStore();
     private static final String ISBN_PARAM = "isbn";
 
-    private Main.JsonLibrary jsonLibrary;
+    private final Main.JsonLibrary jsonLibrary;
 
     BookService(Config config) {
         jsonLibrary = Main.getJsonLibrary(config);
@@ -56,7 +60,7 @@ public class BookService implements Service {
     }
 
     private void getBooks(ServerRequest request, ServerResponse response) {
-        Collection<Book> books = bookStore.getAll();
+        Collection<Book> books = BOOK_STORE.getAll();
         switch (jsonLibrary) {
             case JSONP:
                 response.send(BookMapper.encodeJsonp(books));
@@ -65,6 +69,8 @@ public class BookService implements Service {
             case JACKSON:
                 response.send(books);
                 break;
+            default:
+                throw new RuntimeException("Unknown JSON library " + jsonLibrary);
         }
     }
 
@@ -79,21 +85,23 @@ public class BookService implements Service {
                 request.content().as(Book.class)
                         .thenAccept(book -> addBook(book, response));
                 break;
+            default:
+                throw new RuntimeException("Unknown JSON library " + jsonLibrary);
         }
     }
 
     private void addBook(Book book, ServerResponse response) {
-        if (bookStore.contains(book.getIsbn())) {
+        if (BOOK_STORE.contains(book.getIsbn())) {
             response.status(Http.Status.CONFLICT_409).send();
         } else {
-            bookStore.store(book);
+            BOOK_STORE.store(book);
             response.status(Http.Status.OK_200).send();
         }
     }
 
     private void getBook(ServerRequest request, ServerResponse response) {
         String isbn = request.path().param(ISBN_PARAM);
-        Book book = bookStore.find(isbn);
+        Book book = BOOK_STORE.find(isbn);
 
         if (book == null) {
             response.status(Http.Status.NOT_FOUND_404).send();
@@ -108,6 +116,8 @@ public class BookService implements Service {
             case JACKSON:
                 response.send(book);
                 break;
+            default:
+                throw new RuntimeException("Unknown JSON library " + jsonLibrary);
         }
     }
 
@@ -122,12 +132,14 @@ public class BookService implements Service {
                 request.content().as(Book.class)
                         .thenAccept(book -> updateBook(book, response));
                 break;
+            default:
+                throw new RuntimeException("Unknown JSON library " + jsonLibrary);
         }
     }
 
     private void updateBook(Book book, ServerResponse response) {
-        if (bookStore.contains(book.getIsbn())) {
-            bookStore.store(book);
+        if (BOOK_STORE.contains(book.getIsbn())) {
+            BOOK_STORE.store(book);
             response.status(Http.Status.OK_200).send();
         } else {
             response.status(Http.Status.NOT_FOUND_404).send();
@@ -136,8 +148,8 @@ public class BookService implements Service {
 
     private void deleteBook(ServerRequest request, ServerResponse response) {
         String isbn = request.path().param(ISBN_PARAM);
-        if (bookStore.contains(isbn)) {
-            bookStore.remove(isbn);
+        if (BOOK_STORE.contains(isbn)) {
+            BOOK_STORE.remove(isbn);
             response.send();
         } else {
             response.status(Http.Status.NOT_FOUND_404).send();

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2018 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@ package io.helidon.webserver.examples.tutorial;
 
 import io.helidon.common.http.MediaType;
 import io.helidon.webserver.Routing;
-import io.helidon.webserver.ServerConfiguration;
 import io.helidon.webserver.WebServer;
 import io.helidon.webserver.examples.tutorial.user.UserFilter;
 
@@ -30,7 +29,8 @@ import io.helidon.webserver.examples.tutorial.user.UserFilter;
  */
 public final class Main {
 
-    private Main() {}
+    private Main() {
+    }
 
     static Routing createRouting() {
         UpperXFilter upperXFilter = new UpperXFilter();
@@ -65,10 +65,10 @@ public final class Main {
                 port = 0;
             }
         }
-        ServerConfiguration config = ServerConfiguration.builder()
+
+        WebServer server = WebServer.builder(createRouting())
                 .port(port)
                 .build();
-        WebServer server = WebServer.create(config, createRouting());
 
         // Start the server and print some info.
         server.start().thenAccept(ws -> {

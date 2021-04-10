@@ -1,4 +1,3 @@
-
 # Helidon Config Basic Example
 
 This example shows the basics of using Helidon SE Config. The
@@ -9,14 +8,9 @@ This example shows the basics of using Helidon SE Config. The
 containing config in HOCON (Human-Optimized Config Object Notation) format
 * getting configuration values of various types
 
-## Build
+## Build and run
 
-```
+```bash
 mvn package
-```
-
-## Run
-
-```
-mvn exec:java
+java -jar target/helidon-examples-config-basics.jar
 ```

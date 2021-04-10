@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,7 +26,6 @@ import java.util.Optional;
 import java.util.logging.Logger;
 
 import io.helidon.common.Errors;
-import io.helidon.common.OptionalHelper;
 import io.helidon.common.configurable.Resource;
 import io.helidon.config.Config;
 import io.helidon.security.AuthenticationResponse;
@@ -35,6 +34,7 @@ import io.helidon.security.Grant;
 import io.helidon.security.OutboundSecurityResponse;
 import io.helidon.security.Principal;
 import io.helidon.security.ProviderRequest;
+import io.helidon.security.Role;
 import io.helidon.security.SecurityEnvironment;
 import io.helidon.security.SecurityResponse;
 import io.helidon.security.Subject;
@@ -84,6 +84,7 @@ public final class JwtProvider extends SynchronousProvider implements Authentica
     private final String issuer;
     private final Map<OutboundTarget, JwtOutboundTarget> targetToJwtConfig = new IdentityHashMap<>();
     private final Jwk defaultJwk;
+    private final boolean useJwtGroups;
 
     private JwtProvider(Builder builder) {
         this.optional = builder.optional;
@@ -98,6 +99,7 @@ public final class JwtProvider extends SynchronousProvider implements Authentica
         this.issuer = builder.issuer;
         this.expectedAudience = builder.expectedAudience;
         this.verifySignature = builder.verifySignature;
+        this.useJwtGroups = builder.useJwtGroups;
 
         if (null == atnTokenHandler) {
             defaultTokenHandler = TokenHandler.builder()
@@ -143,8 +145,19 @@ public final class JwtProvider extends SynchronousProvider implements Authentica
         if (!authenticate) {
             return AuthenticationResponse.abstain();
         }
+        Optional<String> maybeToken;
+        try {
+            maybeToken = atnTokenHandler.extractToken(providerRequest.env().headers());
+        } catch (Exception e) {
+            if (optional) {
+                // maybe the token is for somebody else
+                return AuthenticationResponse.abstain();
+            } else {
+                return AuthenticationResponse.failed("JWT header not available or in a wrong format", e);
+            }
+        }
 
-        return atnTokenHandler.extractToken(providerRequest.env().headers())
+        return maybeToken
                 .map(this::authenticateToken)
                 .orElseGet(() -> {
                     if (optional) {
@@ -193,12 +206,16 @@ public final class JwtProvider extends SynchronousProvider implements Authentica
         builder.addToken(Jwt.class, jwt);
         builder.addToken(SignedJwt.class, signedJwt);
 
-        Optional<List<String>> scopes = jwt.scopes();
-
         Subject.Builder subjectBuilder = Subject.builder()
                 .principal(principal)
                 .addPublicCredential(TokenCredential.class, builder.build());
 
+        if (useJwtGroups) {
+            Optional<List<String>> userGroups = jwt.userGroups();
+            userGroups.ifPresent(groups -> groups.forEach(group -> subjectBuilder.addGrant(Role.create(group))));
+        }
+
+        Optional<List<String>> scopes = jwt.scopes();
         scopes.ifPresent(scopeList -> {
             scopeList.forEach(scope -> subjectBuilder.addGrant(Grant.builder()
                                                                        .name(scope)
@@ -327,7 +344,7 @@ public final class JwtProvider extends SynchronousProvider implements Authentica
             principal.abacAttribute(name).ifPresent(val -> builder.addPayloadClaim(name, val));
         });
 
-        OptionalHelper.from(principal.abacAttribute("full_name"))
+        principal.abacAttribute("full_name")
                 .ifPresentOrElse(name -> builder.addPayloadClaim("name", name),
                                  () -> builder.removePayloadClaim("name"));
 
@@ -588,6 +605,7 @@ public final class JwtProvider extends SynchronousProvider implements Authentica
         private JwkKeys signKeys;
         private String issuer;
         private String expectedAudience;
+        private boolean useJwtGroups = true;
 
         private Builder() {
         }
@@ -766,18 +784,19 @@ public final class JwtProvider extends SynchronousProvider implements Authentica
          * @return updated builder instance
          */
         public Builder config(Config config) {
-            config.get("optional").as(Boolean.class).ifPresent(this::optional);
-            config.get("authenticate").as(Boolean.class).ifPresent(this::authenticate);
-            config.get("propagate").as(Boolean.class).ifPresent(this::propagate);
+            config.get("optional").asBoolean().ifPresent(this::optional);
+            config.get("authenticate").asBoolean().ifPresent(this::authenticate);
+            config.get("propagate").asBoolean().ifPresent(this::propagate);
             config.get("allow-impersonation").asBoolean().ifPresent(this::allowImpersonation);
-            config.get("principal-type").as(SubjectType.class).ifPresent(this::subjectType);
-            config.get("atn-token.handler").as(TokenHandler.class).ifPresent(this::atnTokenHandler);
+            config.get("principal-type").asString().map(SubjectType::valueOf).ifPresent(this::subjectType);
+            config.get("atn-token.handler").as(TokenHandler::create).ifPresent(this::atnTokenHandler);
             config.get("atn-token").ifExists(this::verifyKeys);
             config.get("atn-token.jwt-audience").asString().ifPresent(this::expectedAudience);
             config.get("atn-token.verify-signature").asBoolean().ifPresent(this::verifySignature);
             config.get("sign-token").ifExists(outbound -> outboundConfig(OutboundConfig.create(outbound)));
             config.get("sign-token").ifExists(this::outbound);
             config.get("allow-unsigned").asBoolean().ifPresent(this::allowUnsigned);
+            config.get("use-jwt-groups").asBoolean().ifPresent(this::useJwtGroups);
 
             return this;
         }
@@ -791,14 +810,34 @@ public final class JwtProvider extends SynchronousProvider implements Authentica
             this.expectedAudience = audience;
         }
 
+        /**
+         * Claim {@code groups} from JWT will be used to automatically add
+         *  groups to current subject (may be used with {@link javax.annotation.security.RolesAllowed} annotation).
+         *
+         * @param useJwtGroups whether to use {@code groups} claim from JWT to retrieve roles
+         * @return updated builder instance
+         */
+        public Builder useJwtGroups(boolean useJwtGroups) {
+            this.useJwtGroups = useJwtGroups;
+            return this;
+        }
+
         private void verifyKeys(Config config) {
+            config.get("jwk.resource").as(Resource::create).ifPresent(this::verifyJwk);
+
+            // backward compatibility
             Resource.create(config, "jwk").ifPresent(this::verifyJwk);
         }
 
         private void outbound(Config config) {
-            // jwk is optional, we may be propagating existing token
-            Resource.create(config, "jwk").ifPresent(this::signJwk);
             config.get("jwt-issuer").asString().ifPresent(this::issuer);
+
+
+            // jwk is optional, we may be propagating existing token
+            config.get("jwk.resource").as(Resource::create).ifPresent(this::signJwk);
+            // backward compatibility
+            Resource.create(config, "jwk").ifPresent(this::signJwk);
+
         }
     }
 }

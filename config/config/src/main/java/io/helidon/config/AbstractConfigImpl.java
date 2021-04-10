@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,14 +20,10 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
-import java.util.logging.Level;
+import java.util.function.Consumer;
 import java.util.logging.Logger;
 
-import io.helidon.common.reactive.Flow;
-import io.helidon.config.internal.ConfigKeyImpl;
+import io.helidon.config.spi.ConfigMapper;
 
 /**
  * Abstract common implementation of {@link Config} extended by appropriate Config node types:
@@ -42,11 +38,8 @@ abstract class AbstractConfigImpl implements Config {
     private final ConfigKeyImpl realKey;
     private final ConfigFactory factory;
     private final Type type;
-    private final Flow.Publisher<Config> changesPublisher;
     private final Context context;
     private final ConfigMapperManager mapperManager;
-    private volatile Flow.Subscriber<ConfigDiff> subscriber;
-    private final ReentrantReadWriteLock subscriberLock = new ReentrantReadWriteLock();
 
     /**
      * Initializes Config implementation.
@@ -72,12 +65,7 @@ abstract class AbstractConfigImpl implements Config {
         this.factory = factory;
         this.type = type;
 
-        changesPublisher = new FilteringConfigChangeEventPublisher(factory.changes());
         context = new NodeContextImpl();
-    }
-
-    ConfigMapperManager mapperManager() {
-        return mapperManager;
     }
 
     /**
@@ -121,7 +109,7 @@ abstract class AbstractConfigImpl implements Config {
 
     @Override
     public <T> T convert(Class<T> type, String value) throws ConfigMappingException {
-        return mapperManager.map(value, type, "");
+        return mapperManager.map(value, type, key().toString());
     }
 
     @Override
@@ -149,64 +137,6 @@ abstract class AbstractConfigImpl implements Config {
         return asList(Config.class);
     }
 
-    void subscribe() {
-        try {
-            subscriberLock.readLock().lock();
-            if (subscriber == null) {
-                subscriberLock.readLock().unlock();
-                subscriberLock.writeLock().lock();
-                try {
-                    try {
-                        if (subscriber == null) {
-                            waitForSubscription(1, TimeUnit.SECONDS);
-                        }
-                    } finally {
-                        subscriberLock.readLock().lock();
-                    }
-                } finally {
-                    subscriberLock.writeLock().unlock();
-                }
-            }
-        } finally {
-            subscriberLock.readLock().unlock();
-        }
-    }
-
-    /**
-     * We should wait for a subscription, otherwise, we might miss some changes.
-     */
-    private void waitForSubscription(long timeout, TimeUnit unit) {
-        CountDownLatch subscribeLatch = new CountDownLatch(1);
-        subscriber = new Flow.Subscriber<ConfigDiff>() {
-            @Override
-            public void onSubscribe(Flow.Subscription subscription) {
-                subscription.request(Long.MAX_VALUE);
-                subscribeLatch.countDown();
-            }
-
-            @Override
-            public void onNext(ConfigDiff item) {
-            }
-
-            @Override
-            public void onError(Throwable throwable) {
-                LOGGER.log(Level.CONFIG, "Error while subscribing a supplier to the changes.", throwable);
-            }
-
-            @Override
-            public void onComplete() {
-                LOGGER.log(Level.CONFIG, "The config suppliers will no longer receive any change.");
-            }
-        };
-        factory.provider().changes().subscribe(subscriber);
-        try {
-            subscribeLatch.await(timeout, unit);
-        } catch (InterruptedException e) {
-            LOGGER.log(Level.CONFIG, "Waiting for a supplier subscription has been interrupted.", e);
-            Thread.currentThread().interrupt();
-        }
-    }
-
     private Config contextConfig(Config rootConfig) {
         return rootConfig
                 .get(AbstractConfigImpl.this.prefix)
@@ -214,75 +144,20 @@ abstract class AbstractConfigImpl implements Config {
                 .get(AbstractConfigImpl.this.key);
     }
 
-    ConfigFactory factory() {
-        return factory;
+    @Override
+    public void onChange(Consumer<Config> onChangeConsumer) {
+        factory.provider()
+                .onChange(event -> {
+                    // check if change contains this node
+                    if (event.changedKeys().contains(realKey)) {
+                        onChangeConsumer.accept(contextConfig(event.config()));
+                    }
+                });
     }
-
 
     @Override
-    public Flow.Publisher<Config> changes() {
-        return changesPublisher;
-    }
-
-    /**
-     * {@link Flow.Publisher} implementation that filters general {@link ConfigFactory#changes()} events to be wrapped by
-     * {@link FilteringConfigChangeEventSubscriber} for appropriate Config key and subscribers on the config node.
-     */
-    private class FilteringConfigChangeEventPublisher implements Flow.Publisher<Config> {
-
-        private Flow.Publisher<ConfigDiff> delegate;
-
-        private FilteringConfigChangeEventPublisher(Flow.Publisher<ConfigDiff> delegate) {
-            this.delegate = delegate;
-        }
-
-        @Override
-        public void subscribe(Flow.Subscriber<? super Config> subscriber) {
-            delegate.subscribe(new FilteringConfigChangeEventSubscriber(subscriber));
-        }
-
-    }
-
-    /**
-     * {@link Flow.Subscriber} wrapper implementation that filters general {@link ConfigFactory#changes()} events
-     * for appropriate Config key and subscribers on the config node.
-     *
-     * @see FilteringConfigChangeEventPublisher
-     */
-    private class FilteringConfigChangeEventSubscriber implements Flow.Subscriber<ConfigDiff> {
-
-        private final Flow.Subscriber<? super Config> delegate;
-        private Flow.Subscription subscription;
-
-        private FilteringConfigChangeEventSubscriber(Flow.Subscriber<? super Config> delegate) {
-            this.delegate = delegate;
-        }
-
-        @Override
-        public void onSubscribe(Flow.Subscription subscription) {
-            this.subscription = subscription;
-            delegate.onSubscribe(subscription);
-        }
-
-        @Override
-        public void onNext(ConfigDiff event) {
-            //(3. fire just on case the sub-node has changed)
-            if (event.changedKeys().contains(AbstractConfigImpl.this.realKey)) {
-                delegate.onNext(AbstractConfigImpl.this.contextConfig(event.config()));
-            } else {
-                subscription.request(1);
-            }
-        }
-
-        @Override
-        public void onError(Throwable throwable) {
-            delegate.onError(throwable);
-        }
-
-        @Override
-        public void onComplete() {
-            delegate.onComplete();
-        }
+    public ConfigMapper mapper() {
+        return mapperManager;
     }
 
     /**
@@ -297,9 +172,6 @@ abstract class AbstractConfigImpl implements Config {
 
         @Override
         public Config last() {
-            //the 'last config' behaviour is based on switched-on changes support
-            subscribe();
-
             return AbstractConfigImpl.this.contextConfig(AbstractConfigImpl.this.factory.context().last());
         }
 
@@ -307,7 +179,5 @@ abstract class AbstractConfigImpl implements Config {
         public Config reload() {
             return AbstractConfigImpl.this.contextConfig(AbstractConfigImpl.this.factory.context().reload());
         }
-
     }
-
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2018 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,21 +22,20 @@ import javax.ws.rs.client.Client;
 import javax.ws.rs.client.ClientBuilder;
 import javax.ws.rs.core.Response;
 
-import io.helidon.webserver.ServerConfiguration;
 import io.helidon.webserver.WebServer;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * The Jersey Client based example that tests the {@link HelloWorld} resource
- * that gets served by running {@link WebServerJerseyMain#startServer(ServerConfiguration)}
+ * that gets served by running {@link Main#startServer(int)}
  *
  * @see HelloWorld
- * @see WebServerJerseyMain
+ * @see Main
  */
 public class HelloWorldTest {
 
@@ -44,7 +43,7 @@ public class HelloWorldTest {
 
     @BeforeAll
     public static void startTheServer() throws Exception {
-        webServer = WebServerJerseyMain.startServer(null)
+        webServer = Main.startServer(0)
                                        .toCompletableFuture()
                                        .get(10, TimeUnit.SECONDS);
     }

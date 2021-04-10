@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,16 +16,16 @@
 
 package io.helidon.tests.apps.bookstore.se;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import javax.json.Json;
 import javax.json.JsonArray;
 import javax.json.JsonArrayBuilder;
 import javax.json.JsonBuilderFactory;
 import javax.json.JsonObject;
 
-import io.helidon.tests.apps.bookstore.mp.Author;
-
-import java.util.ArrayList;
-import java.util.List;
+import io.helidon.tests.apps.bookstore.common.Author;
 
 class AuthorMapper {
 
@@ -38,6 +38,8 @@ class AuthorMapper {
      */
     private static final JsonBuilderFactory JSON_FACTORY = Json.createBuilderFactory(null);
 
+    private AuthorMapper() {
+    }
 
     /**
      *
@@ -66,9 +68,9 @@ class AuthorMapper {
      * @param jo JsonObject representation of author to get new values from
      * @return Updated author
      */
-    static private Author updateAuthor(Author author, JsonObject jo) {
-        if (!jo.isNull(FIRST)) author.setFirst(jo.getString(FIRST));
-        if (!jo.isNull(LAST)) author.setLast(jo.getString(LAST));
+    private static Author updateAuthor(Author author, JsonObject jo) {
+        if (jo.containsKey(FIRST)) author.setFirst(jo.getString(FIRST));
+        if (jo.containsKey(LAST)) author.setLast(jo.getString(LAST));
         return author;
     }
 

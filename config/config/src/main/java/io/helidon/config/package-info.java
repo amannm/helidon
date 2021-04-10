@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2018 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -58,7 +58,8 @@
  * The {@link io.helidon.config.Config#type()} method
  * returns an enum value {@link io.helidon.config.Config.Type} that tells how the
  * program should interpret the content of the node.
- * <table summary="Config Node Types">
+ * <table class="config">
+ * <caption><b>Config Node Types</b></caption>
  * <tr>
  * <th>Type</th>
  * <th>Meaning</th>
@@ -112,7 +113,7 @@
  * <h3>Monitoring Changes</h3>
  *
  * The program can react to configuration changes by passing a listener
- * to {@link io.helidon.config.Config#onChange}.
+ * to {@link io.helidon.config.Config#onChange(java.util.function.Consumer)}.
  *
  * <h3 id="conversions">Converting Configuration to Java Types</h3>
  * The {@link io.helidon.config.Config} class provides many methods for converting config

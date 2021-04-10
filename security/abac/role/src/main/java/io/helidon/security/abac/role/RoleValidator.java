@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,7 +39,6 @@ import javax.annotation.security.DenyAll;
 import javax.annotation.security.PermitAll;
 import javax.annotation.security.RolesAllowed;
 
-import io.helidon.common.CollectionsHelper;
 import io.helidon.common.Errors;
 import io.helidon.config.Config;
 import io.helidon.security.EndpointConfig;
@@ -157,7 +156,7 @@ public final class RoleValidator implements AbacValidator<RoleValidator.RoleConf
 
         Set<String> roleGrants = subject
                 .map(sub -> sub.grants(Role.class))
-                .orElse(CollectionsHelper.listOf())
+                .orElse(List.of())
                 .stream()
                 .map(Role::getName)
                 .collect(Collectors.toSet());
@@ -178,7 +177,7 @@ public final class RoleValidator implements AbacValidator<RoleValidator.RoleConf
     @Override
     public Collection<Class<? extends Annotation>> supportedAnnotations() {
         //Order of the annotations matters because of annotation handling.
-        return CollectionsHelper.listOf(RolesAllowed.class, Roles.class, RolesContainer.class, PermitAll.class, DenyAll.class);
+        return List.of(RolesAllowed.class, Roles.class, RolesContainer.class, PermitAll.class, DenyAll.class);
     }
 
     /**

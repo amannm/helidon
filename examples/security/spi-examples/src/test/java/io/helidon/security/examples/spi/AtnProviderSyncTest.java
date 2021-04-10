@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,11 +17,11 @@
 package io.helidon.security.examples.spi;
 
 import java.lang.annotation.Annotation;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
-import io.helidon.common.CollectionsHelper;
-import io.helidon.common.OptionalHelper;
 import io.helidon.config.Config;
 import io.helidon.config.ConfigSources;
 import io.helidon.security.AuthenticationResponse;
@@ -30,6 +30,7 @@ import io.helidon.security.ProviderRequest;
 import io.helidon.security.Security;
 import io.helidon.security.SecurityContext;
 import io.helidon.security.SecurityEnvironment;
+import io.helidon.security.SecurityLevel;
 import io.helidon.security.SecurityResponse;
 import io.helidon.security.Subject;
 
@@ -93,9 +94,13 @@ public class AtnProviderSyncTest {
         when(context.service()).thenReturn(Optional.empty());
 
         SecurityEnvironment se = SecurityEnvironment.create();
+
+        SecurityLevel level = SecurityLevel.create("mock")
+                .withClassAnnotations(Map.of(AtnProviderSync.AtnAnnot.class, List.of(annot)))
+                .build();
+
         EndpointConfig ep = EndpointConfig.builder()
-                .annotations(EndpointConfig.AnnotationScope.CLASS,
-                             CollectionsHelper.mapOf(AtnProviderSync.AtnAnnot.class, CollectionsHelper.listOf(annot)))
+                .securityLevels(List.of(level))
                 .build();
 
         ProviderRequest request = mock(ProviderRequest.class);
@@ -132,7 +137,7 @@ public class AtnProviderSyncTest {
     @Test
     public void testConfigSuccess() {
         Config config = Config.create(
-                ConfigSources.create(CollectionsHelper.mapOf("value", VALUE,
+                ConfigSources.create(Map.of("value", VALUE,
                                                              "size", String.valueOf(SIZE)))
         );
 
@@ -157,7 +162,7 @@ public class AtnProviderSyncTest {
     @Test
     public void testFailure() {
         Config config = Config.create(
-                ConfigSources.create(CollectionsHelper.mapOf("atn-object.size", String.valueOf(SIZE)))
+                ConfigSources.create(Map.of("atn-object.size", String.valueOf(SIZE)))
         );
 
         SecurityContext context = mock(SecurityContext.class);
@@ -203,7 +208,7 @@ public class AtnProviderSyncTest {
         assertThat(response.status(), is(SecurityResponse.SecurityStatus.SUCCESS));
         Optional<Subject> maybeuser = response.user();
 
-        OptionalHelper.from(maybeuser).ifPresentOrElse(user -> {
+        maybeuser.ifPresentOrElse(user -> {
             assertThat(user.principal().id(), is(VALUE));
             Set<String> roles = Security.getRoles(user);
             assertThat(roles.size(), is(1));

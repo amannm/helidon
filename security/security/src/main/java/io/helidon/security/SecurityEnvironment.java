@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,7 +24,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.TreeMap;
 
-import io.helidon.common.CollectionsHelper;
 import io.helidon.security.util.AbacSupport;
 
 /**
@@ -264,6 +263,17 @@ public class SecurityEnvironment implements AbacSupport {
         }
 
         /**
+         * We may want to clear existing headers, such as when deriving an environment
+         * for outbound calls.
+         *
+         * @return this instance
+         */
+        public Builder clearHeaders() {
+            this.headers.clear();
+            return this;
+        }
+
+        /**
          * Add a single-value header. Note that if method {@link #headers(Map)} is called after
          * this method, it will remove changes by this method.
          *
@@ -272,7 +282,7 @@ public class SecurityEnvironment implements AbacSupport {
          * @return this instance
          */
         public Builder header(String header, String value) {
-            this.headers.put(header, CollectionsHelper.listOf(value));
+            this.headers.put(header, List.of(value));
             return this;
         }
 

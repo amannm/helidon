@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,25 +15,26 @@
  */
 package io.helidon.microprofile.tracing;
 
+import java.util.Optional;
+
 import javax.annotation.Priority;
 import javax.enterprise.context.ApplicationScoped;
-import javax.inject.Inject;
 import javax.inject.Provider;
 import javax.ws.rs.ConstrainedTo;
 import javax.ws.rs.RuntimeType;
 import javax.ws.rs.container.ContainerRequestContext;
 import javax.ws.rs.container.ContainerRequestFilter;
-import javax.ws.rs.container.ContainerResponseContext;
-import javax.ws.rs.container.ContainerResponseFilter;
 import javax.ws.rs.container.PreMatching;
 import javax.ws.rs.core.Context;
 
-import io.helidon.config.Config;
+import io.helidon.common.context.Contexts;
 import io.helidon.tracing.jersey.client.internal.TracingContext;
 import io.helidon.webserver.ServerRequest;
 
 import io.opentracing.SpanContext;
 import io.opentracing.Tracer;
+import org.eclipse.microprofile.config.Config;
+import org.eclipse.microprofile.config.ConfigProvider;
 
 /**
  * Automatically registered filter that stores
@@ -46,29 +47,23 @@ import io.opentracing.Tracer;
 @PreMatching
 @Priority(Integer.MIN_VALUE)
 @ApplicationScoped
-public class MpTracingContextFilter implements ContainerRequestFilter, ContainerResponseFilter {
+public class MpTracingContextFilter implements ContainerRequestFilter {
     @Context
     private Provider<ServerRequest> request;
 
-    @Inject
-    private Config config;
+    private final Config config = ConfigProvider.getConfig();
 
     @Override
     public void filter(ContainerRequestContext requestContext) {
         ServerRequest serverRequest = this.request.get();
 
-        Tracer tracer = serverRequest.webServer().configuration().tracer();
-        SpanContext parentSpan = serverRequest.spanContext();
+        Tracer tracer = serverRequest.tracer();
+        Optional<SpanContext> parentSpan = serverRequest.spanContext();
 
-        boolean clientEnabled = config.get("tracing.client.enabled").asBoolean().orElse(true);
+        boolean clientEnabled = config.getOptionalValue("tracing.client.enabled", Boolean.class).orElse(true);
         TracingContext tracingContext = TracingContext.create(tracer, serverRequest.headers().toMap(), clientEnabled);
-        tracingContext.parentSpan(parentSpan);
+        parentSpan.ifPresent(tracingContext::parentSpan);
 
-        TracingContext.set(tracingContext);
-    }
-
-    @Override
-    public void filter(ContainerRequestContext requestContext, ContainerResponseContext responseContext) {
-        TracingContext.remove();
+        Contexts.context().ifPresent(ctx -> ctx.register(tracingContext));
     }
 }

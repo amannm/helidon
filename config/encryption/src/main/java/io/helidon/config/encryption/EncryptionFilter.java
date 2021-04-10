@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018,2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,7 +25,6 @@ import java.util.function.Function;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-import io.helidon.common.OptionalHelper;
 import io.helidon.common.pki.KeyConfig;
 import io.helidon.config.Config;
 import io.helidon.config.MissingValueException;
@@ -37,11 +36,11 @@ import io.helidon.config.spi.ConfigFilter;
  * <p>
  * Password in properties must be stored as follows:
  * <ul>
- * <li>${AES=base64} - encrypted password using a master password (must be provided to Prime through configuration, system
+ * <li>${AES=base64} - encrypted password using a master password (must be provided to prime through configuration, system
  * property or environment variable)</li>
  * <li>${RSA=base64} - encrypted password using a public key (private key must be available to Prime instance,
  * its location must be provided to prime through configuration, system property or environment variable)</li>
- * <li>${ALIAS=alias_name} - reference to another property, that is encrypted</li>
+ * <li>${ALIAS=alias_name} - no longer needed, please use {@code ${alias_name}}</li>
  * <li>${CLEAR=text} - clear-text password. Intentionally denoting this value as a protectable one, so we can enforce encryption
  * (e.g. in prod)</li>
  * </ul>
@@ -49,7 +48,7 @@ import io.helidon.config.spi.ConfigFilter;
  * <pre>
  * google_client_secret=${AES=mYRkg+4Q4hua1kvpCCI2hg==}
  * service_password=${RSA=mYRkg+4Q4hua1kvpCCI2hg==}
- * another_password=${ALIAS=service_password}
+ * another_password=${service_password}
  * cleartext_password=${CLEAR=known_password}
  * </pre>
  *
@@ -59,8 +58,10 @@ import io.helidon.config.spi.ConfigFilter;
  * @see ConfigProperties#REQUIRE_ENCRYPTION_ENV_VARIABLE
  */
 public final class EncryptionFilter implements ConfigFilter {
-    static final String PREFIX_AES = "${AES=";
-    static final String PREFIX_RSA = "${RSA=";
+    private static final String PREFIX_LEGACY_AES = "${AES=";
+    private static final String PREFIX_LEGACY_RSA = "${RSA=";
+    static final String PREFIX_GCM = "${GCM=";
+    static final String PREFIX_RSA = "${RSA-P=";
     private static final Logger LOGGER = Logger.getLogger(EncryptionFilter.class.getName());
     private static final String PREFIX_ALIAS = "${ALIAS=";
     private static final String PREFIX_CLEAR = "${CLEAR=";
@@ -78,10 +79,9 @@ public final class EncryptionFilter implements ConfigFilter {
     private EncryptionFilter(Builder builder, Config config) {
         if (builder.fromConfig) {
 
-            this.requireEncryption = OptionalHelper.from(EncryptionUtil.getEnv(ConfigProperties.REQUIRE_ENCRYPTION_ENV_VARIABLE)
-                                                                 .map(Boolean::parseBoolean))
+            this.requireEncryption = EncryptionUtil.getEnv(ConfigProperties.REQUIRE_ENCRYPTION_ENV_VARIABLE)
+                                                                 .map(Boolean::parseBoolean)
                     .or(() -> config.get(ConfigProperties.REQUIRE_ENCRYPTION_CONFIG_KEY).asBoolean().asOptional())
-                    .asOptional()
                     .orElse(true);
 
             this.masterPassword = EncryptionUtil.resolveMasterPassword(requireEncryption, config).orElse(null);
@@ -180,8 +180,16 @@ public final class EncryptionFilter implements ConfigFilter {
 
     private String decryptRsa(PrivateKey privateKey, String value) {
         // service_password=${RSA=mYRkg+4Q4hua1kvpCCI2hg==}
-
-        if (value.startsWith(PREFIX_RSA)) {
+        if (value.startsWith(PREFIX_LEGACY_RSA)) {
+            LOGGER.log(Level.WARNING, () -> "You are using legacy RSA encryption. Please re-encrypt the value with RSA-P.");
+            String b64Value = removePlaceholder(PREFIX_LEGACY_RSA, value);
+            try {
+                return EncryptionUtil.decryptRsaLegacy(privateKey, b64Value);
+            } catch (ConfigEncryptionException e) {
+                LOGGER.log(Level.FINEST, e, () -> "Failed to decrypt " + value);
+                return value;
+            }
+        } else if (value.startsWith(PREFIX_RSA)) {
             String b64Value = removePlaceholder(PREFIX_RSA, value);
             try {
                 return EncryptionUtil.decryptRsa(privateKey, b64Value);
@@ -197,8 +205,17 @@ public final class EncryptionFilter implements ConfigFilter {
     private String decryptAes(char[] masterPassword, String value) {
         // google_client_secret=${AES=mYRkg+4Q4hua1kvpCCI2hg==}
 
-        if (value.startsWith(PREFIX_AES)) {
-            String b64Value = value.substring(PREFIX_AES.length(), value.length() - 1);
+        if (value.startsWith(PREFIX_LEGACY_AES)) {
+            LOGGER.log(Level.WARNING, () -> "You are using legacy AES encryption. Please re-encrypt the value with GCM.");
+            String b64Value = value.substring(PREFIX_LEGACY_AES.length(), value.length() - 1);
+            try {
+                return EncryptionUtil.decryptAesLegacy(masterPassword, b64Value);
+            } catch (ConfigEncryptionException e) {
+                LOGGER.log(Level.FINEST, e, () -> "Failed to decrypt " + value);
+                return value;
+            }
+        } else if (value.startsWith(PREFIX_GCM)) {
+            String b64Value = value.substring(PREFIX_GCM.length(), value.length() - 1);
             try {
                 return EncryptionUtil.decryptAes(masterPassword, b64Value);
             } catch (ConfigEncryptionException e) {

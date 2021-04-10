@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 package io.helidon.security.examples.jersey;
 
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -25,12 +26,12 @@ import java.util.Optional;
 import javax.ws.rs.core.Response;
 import javax.ws.rs.ext.ExceptionMapper;
 
-import io.helidon.common.CollectionsHelper;
 import io.helidon.security.Security;
 import io.helidon.security.integration.jersey.SecurityFeature;
 import io.helidon.security.providers.abac.AbacProvider;
+import io.helidon.security.providers.common.OutboundTarget;
 import io.helidon.security.providers.httpauth.HttpBasicAuthProvider;
-import io.helidon.security.providers.httpauth.UserStore;
+import io.helidon.security.providers.httpauth.SecureUserStore;
 import io.helidon.webserver.Routing;
 import io.helidon.webserver.WebServer;
 import io.helidon.webserver.jersey.JerseySupport;
@@ -39,28 +40,32 @@ import io.helidon.webserver.jersey.JerseySupport;
  * Example of integration between Jersey and Security module using builders.
  */
 public final class JerseyBuilderMain {
-    private static final Map<String, UserStore.User> USERS = new HashMap<>();
+    private static final Map<String, SecureUserStore.User> USERS = new HashMap<>();
     private static volatile WebServer server;
 
     static {
-        addUser("jack", "password", CollectionsHelper.listOf("user", "admin"));
-        addUser("jill", "password", CollectionsHelper.listOf("user"));
-        addUser("john", "password", CollectionsHelper.listOf());
+        addUser("jack", "password", List.of("user", "admin"));
+        addUser("jill", "password", List.of("user"));
+        addUser("john", "password", List.of());
     }
 
     private JerseyBuilderMain() {
     }
 
     private static void addUser(String user, String password, List<String> roles) {
-        USERS.put(user, new UserStore.User() {
+        USERS.put(user, new SecureUserStore.User() {
             @Override
             public String login() {
                 return user;
             }
 
-            @Override
-            public char[] password() {
+            private char[] password() {
                 return password.toCharArray();
+            }
+
+            @Override
+            public boolean isPasswordValid(char[] password) {
+                return Arrays.equals(password(), password);
             }
 
             @Override
@@ -80,12 +85,13 @@ public final class JerseyBuilderMain {
                         // add the security provider to use
                         .addProvider(HttpBasicAuthProvider.builder()
                                              .realm("helidon")
-                                             .userStore(users()))
+                                             .userStore(users())
+                                             .addOutboundTarget(OutboundTarget.builder("propagate-all").build()))
                         .addProvider(AbacProvider.create())
                         .build());
     }
 
-    private static UserStore users() {
+    private static SecureUserStore users() {
         return login -> Optional.ofNullable(USERS.get(login));
     }
 
@@ -117,7 +123,7 @@ public final class JerseyBuilderMain {
         Routing.Builder routing = Routing.builder()
                 .register("/rest", buildJersey());
 
-        server = JerseyUtil.startIt(routing);
+        server = JerseyUtil.startIt(routing, 8080);
 
         JerseyResources.setPort(server.port());
     }

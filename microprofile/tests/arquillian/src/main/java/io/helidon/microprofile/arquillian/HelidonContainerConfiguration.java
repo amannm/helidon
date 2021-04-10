@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,11 +35,11 @@ import org.jboss.arquillian.container.spi.client.container.ContainerConfiguratio
  */
 public class HelidonContainerConfiguration implements ContainerConfiguration {
     private String appClassName = null;
-    private String resourceClassName = null;
+    private String excludeArchivePattern = null;
     private int port = 8080;
     private boolean deleteTmp = true;
-    private boolean addResourcesToApps = false;
-    private boolean replaceConfigSourcesWithMp = false;
+    private boolean useRelativePath = false;
+    private boolean useParentClassloader = true;
 
     public String getApp() {
         return appClassName;
@@ -47,14 +47,6 @@ public class HelidonContainerConfiguration implements ContainerConfiguration {
 
     public void setApp(String app) {
         this.appClassName = app;
-    }
-
-    public String getResource() {
-        return resourceClassName;
-    }
-
-    public void setResource(String resource) {
-        this.resourceClassName = resource;
     }
 
     public int getPort() {
@@ -73,20 +65,28 @@ public class HelidonContainerConfiguration implements ContainerConfiguration {
         this.deleteTmp = b;
     }
 
-    public boolean getAddResourcesToApps() {
-        return addResourcesToApps;
+    public boolean getUseRelativePath() {
+        return useRelativePath;
     }
 
-    public void setAddResourcesToApps(boolean addResourcesToApps) {
-        this.addResourcesToApps = addResourcesToApps;
+    public void setUseRelativePath(boolean b) {
+        this.useRelativePath = b;
     }
 
-    public void setReplaceConfigSourcesWithMp(boolean replaceConfigSourcesWithMp) {
-        this.replaceConfigSourcesWithMp = replaceConfigSourcesWithMp;
+    public String getExcludeArchivePattern() {
+        return excludeArchivePattern;
     }
 
-    public boolean getReplaceConfigSourcesWithMp() {
-        return replaceConfigSourcesWithMp;
+    public void setExcludeArchivePattern(String excludeArchivePattern) {
+        this.excludeArchivePattern = excludeArchivePattern;
+    }
+
+    public boolean getUserParentClassloader() {
+        return useParentClassloader;
+    }
+
+    public void setUseParentClassloader(boolean useParentClassloader) {
+        this.useParentClassloader = useParentClassloader;
     }
 
     @Override

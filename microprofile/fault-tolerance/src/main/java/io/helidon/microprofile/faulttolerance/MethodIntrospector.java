@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2020 Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,8 +18,6 @@ package io.helidon.microprofile.faulttolerance;
 
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Method;
-import java.util.HashMap;
-import java.util.Map;
 
 import io.helidon.microprofile.faulttolerance.MethodAntn.LookupResult;
 
@@ -42,15 +40,15 @@ class MethodIntrospector {
 
     private final Class<?> beanClass;
 
-    private Retry retry;
+    private final Retry retry;
 
-    private Fallback fallback;
+    private final Fallback fallback;
 
-    private CircuitBreaker circuitBreaker;
+    private final CircuitBreaker circuitBreaker;
 
-    private Timeout timeout;
+    private final Timeout timeout;
 
-    private Bulkhead bulkhead;
+    private final Bulkhead bulkhead;
 
     /**
      * Constructor.
@@ -61,20 +59,15 @@ class MethodIntrospector {
         this.beanClass = beanClass;
         this.method = method;
 
-        // Only process annotations if FT is enabled
-        if (FaultToleranceExtension.isFaultToleranceEnabled()) {
-            this.retry = isAnnotationEnabled(Retry.class) ? new RetryAntn(beanClass, method) : null;
-            this.circuitBreaker = isAnnotationEnabled(CircuitBreaker.class)
-                    ? new CircuitBreakerAntn(beanClass, method) : null;
-            this.timeout = isAnnotationEnabled(Timeout.class) ? new TimeoutAntn(beanClass, method) : null;
-            this.bulkhead = isAnnotationEnabled(Bulkhead.class) ? new BulkheadAntn(beanClass, method) : null;
-        }
-
-        // Fallback is always enabled
+        this.retry = isAnnotationEnabled(Retry.class) ? new RetryAntn(beanClass, method) : null;
+        this.circuitBreaker = isAnnotationEnabled(CircuitBreaker.class)
+                ? new CircuitBreakerAntn(beanClass, method) : null;
+        this.timeout = isAnnotationEnabled(Timeout.class) ? new TimeoutAntn(beanClass, method) : null;
+        this.bulkhead = isAnnotationEnabled(Bulkhead.class) ? new BulkheadAntn(beanClass, method) : null;
         this.fallback = isAnnotationEnabled(Fallback.class) ? new FallbackAntn(beanClass, method) : null;
     }
 
-    Method getMethod() {
+    Method method() {
         return method;
     }
 
@@ -158,41 +151,6 @@ class MethodIntrospector {
     }
 
     /**
-     * Returns a collection of Hystrix properties needed to configure
-     * commands. These properties are derived from the set of annotations
-     * found on a method or its class.
-     *
-     * @return The collection of Hystrix properties.
-     */
-    Map<String, Object> getHystrixProperties() {
-        final HashMap<String, Object> result = new HashMap<>();
-
-        // Use semaphores for async and bulkhead
-        if (!isAsynchronous() && hasBulkhead()) {
-            result.put("execution.isolation.semaphore.maxConcurrentRequests", bulkhead.value());
-        }
-
-        // Circuit breakers
-        result.put("circuitBreaker.enabled", hasCircuitBreaker());
-        if (hasCircuitBreaker()) {
-            // We are implementing this logic internally, so set to high values
-            result.put("circuitBreaker.requestVolumeThreshold", Integer.MAX_VALUE);
-            result.put("circuitBreaker.errorThresholdPercentage", 100);
-            result.put("circuitBreaker.sleepWindowInMilliseconds", Long.MAX_VALUE);
-        }
-
-        // Timeouts
-        result.put("execution.timeout.enabled", hasTimeout());
-        if (hasTimeout()) {
-            final Timeout timeout = getTimeout();
-            result.put("execution.isolation.thread.timeoutInMilliseconds",
-                       TimeUtil.convertToMillis(timeout.value(), timeout.unit()));
-        }
-
-        return result;
-    }
-
-    /**
      * Determines if annotation type is present and enabled.
      *
      * @param clazz Annotation class to search for.
@@ -211,22 +169,22 @@ class MethodIntrospector {
         value = getParameter(method.getDeclaringClass().getName(), method.getName(),
                 annotationType, "enabled");
         if (value != null) {
-            return Boolean.valueOf(value);
+            return Boolean.parseBoolean(value);
         }
 
         // Check if property defined at class level
         value = getParameter(method.getDeclaringClass().getName(), annotationType, "enabled");
         if (value != null) {
-            return Boolean.valueOf(value);
+            return Boolean.parseBoolean(value);
         }
 
         // Check if property defined at global level
         value = getParameter(annotationType, "enabled");
         if (value != null) {
-            return Boolean.valueOf(value);
+            return Boolean.parseBoolean(value);
         }
 
         // Default is enabled
-        return true;
+        return clazz == Fallback.class || FaultToleranceExtension.isFaultToleranceEnabled();
     }
 }

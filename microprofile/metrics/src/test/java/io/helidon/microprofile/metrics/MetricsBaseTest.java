@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2021 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,57 +16,53 @@
 
 package io.helidon.microprofile.metrics;
 
-import javax.enterprise.inject.se.SeContainer;
-import javax.enterprise.inject.se.SeContainerInitializer;
 import javax.enterprise.inject.spi.CDI;
+import javax.inject.Inject;
+
+import io.helidon.microprofile.tests.junit5.HelidonTest;
 
 import org.eclipse.microprofile.metrics.Metric;
+import org.eclipse.microprofile.metrics.MetricID;
 import org.eclipse.microprofile.metrics.MetricRegistry;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
+import org.eclipse.microprofile.metrics.SimpleTimer;
+import org.eclipse.microprofile.metrics.annotation.RegistryType;
 
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.notNullValue;
+import java.lang.reflect.Method;
 
 /**
  * Class MetricsBaseTest.
  */
+@HelidonTest
 public class MetricsBaseTest {
 
     private static final String METRIC_NAME_TEMPLATE = "%s.%s";
 
-    private static SeContainer cdiContainer;
+    @Inject
+    private MetricRegistry metricRegistry;
 
-    private static MetricRegistry metricRegistry;
+    @Inject
+    @RegistryType(type = MetricRegistry.Type.BASE)
+    private MetricRegistry baseRegistry;
 
-    @BeforeAll
-    public synchronized static void startCdiContainer() {
-        final SeContainerInitializer initializer = SeContainerInitializer.newInstance();
-        assertThat(initializer, is(notNullValue()));
-        cdiContainer = initializer.initialize();
-    }
-
-    @AfterAll
-    public synchronized static void shutDownCdiContainer() {
-        if (cdiContainer != null) {
-            cdiContainer.close();
-        }
-    }
-
-    static synchronized MetricRegistry getMetricRegistry() {
-        if (metricRegistry == null) {
-            metricRegistry = CDI.current().select(MetricRegistry.class).get();
-        }
+    MetricRegistry getMetricRegistry() {
         return metricRegistry;
     }
 
+    <T extends Metric> T getMetric(Object bean, String name) {
+        return getMetric(getMetricRegistry(), bean, name);
+    }
+
     @SuppressWarnings("unchecked")
-    static <T extends Metric> T getMetric(Object bean, String name) {
-        String metricName = String.format(METRIC_NAME_TEMPLATE,
-                                          MetricsCdiExtension.getRealClass(bean).getName(),        // CDI proxies
-                                          name);
-        return (T) getMetricRegistry().getMetrics().get(metricName);
+    <T extends Metric> T getMetric(MetricRegistry registry, Object bean, String name) {
+        MetricID metricName = new MetricID(String.format(METRIC_NAME_TEMPLATE,
+                MetricsCdiExtension.getRealClass(bean).getName(),        // CDI proxies
+                name));
+        return (T)registry.getMetrics().get(metricName);
+    }
+
+    SimpleTimer getSyntheticSimpleTimer(Method method) {
+        MetricID metricID = MetricsCdiExtension.syntheticSimpleTimerMetricID(method);
+        return baseRegistry.getSimpleTimers().get(metricID);
     }
 
     <T> T newBean(Class<T> beanClass) {

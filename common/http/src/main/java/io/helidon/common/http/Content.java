@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,14 +16,17 @@
 
 package io.helidon.common.http;
 
-import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Flow;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
-import io.helidon.common.reactive.Flow;
+import io.helidon.common.reactive.Multi;
+import io.helidon.common.reactive.Single;
 
 /**
- * Represents an HTTP entity as a {@link Flow.Publisher publisher} of {@link DataChunk chunks} with specific
+ * Represents an HTTP entity as a {@link Multi multi} of {@link DataChunk chunks} with specific
  * features.
  * <h3>Default publisher contract</h3>
  * Default publisher accepts only single subscriber. Other subscribers receives
@@ -38,11 +41,13 @@ import io.helidon.common.reactive.Flow;
  * {@link #registerFilter(Function)} method. It can be used to wrap or replace previously registered (or default) publisher.
  *
  * <h3>Entity Readers</h3>
- * It is possible to register function to convert publisher to {@link CompletionStage} of a single entity using
+ * It is possible to register function to convert publisher to {@link io.helidon.common.reactive.Single} of a single entity using
  * {@link #registerReader(Class, Reader)} or {@link #registerReader(Predicate, Reader)} methods. It
  * is then possible to use {@link #as(Class)} method to obtain such entity.
+ * @deprecated use {@code io.helidon.media.common.MessageBodyReadableContent} instead
  */
-public interface Content extends Flow.Publisher<DataChunk> {
+@Deprecated(since = "2.0.0")
+public interface Content extends Multi<DataChunk> {
     /**
      * If possible, adds the given Subscriber to this publisher. This publisher is effectively
      * either the original publisher
@@ -71,7 +76,9 @@ public interface Content extends Flow.Publisher<DataChunk> {
      *
      * @param function a function that transforms a given publisher (that is either the original
      *                 publisher or the publisher transformed by the last previously registered filter).
+     * @deprecated since 2.0.0, use {@code io.helidon.media.common.MessageBodyReaderContext.registerFilter}
      */
+    @Deprecated(since = "2.0.0")
     void registerFilter(Function<Flow.Publisher<DataChunk>, Flow.Publisher<DataChunk>> function);
 
     /**
@@ -89,7 +96,9 @@ public interface Content extends Flow.Publisher<DataChunk> {
      *               If an exception is thrown, the resulting completion stage of
      *               {@link #as(Class)} method call ends exceptionally.
      * @param <T>    the requested type
+     * @deprecated since 2.0.0, use {@code io.helidon.media.common.MessageBodyReaderContext.registerReader}
      */
+    @Deprecated(since = "2.0.0")
     <T> void registerReader(Class<T> type, Reader<T> reader);
 
     /**
@@ -110,7 +119,9 @@ public interface Content extends Flow.Publisher<DataChunk> {
      *                  If an exception is thrown, the resulting completion stage of
      *                  {@link #as(Class)} method call ends exceptionally.
      * @param <T>       the requested type
+     * @deprecated since 2.0.0, use {@code io.helidon.media.common.MessageBodyReaderContext.registerReader}
      */
+    @Deprecated(since = "2.0.0")
     <T> void registerReader(Predicate<Class<?>> predicate, Reader<T> reader);
 
     /**
@@ -119,10 +130,15 @@ public interface Content extends Flow.Publisher<DataChunk> {
      * The conversion requires an appropriate reader to be already registered
      * (see {@link #registerReader(Predicate, Reader)}). If no such reader is found, the
      * resulting completion stage ends exceptionally.
+     * <p>
+     * Any callback related to the returned value, should not be blocking. Blocking operation could cause deadlock.
+     * If you need to use blocking API such as {@link java.io.InputStream} it is highly recommended to do so out of
+     * the scope of reactive chain, or to use methods like
+     * {@link java.util.concurrent.CompletionStage#thenAcceptAsync(Consumer, Executor)}.
      *
-     * @param type the requested type class
      * @param <T>  the requested type
+     * @param type the requested type class
      * @return a completion stage of the requested type
      */
-    <T> CompletionStage<T> as(Class<T> type);
+    <T> Single<T> as(Class<T> type);
 }

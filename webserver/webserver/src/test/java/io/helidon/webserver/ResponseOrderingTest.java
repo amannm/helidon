@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,34 +16,24 @@
 
 package io.helidon.webserver;
 
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.util.ArrayList;
 import java.util.Optional;
-import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
-import javax.ws.rs.client.Entity;
-import javax.ws.rs.core.MediaType;
-import javax.ws.rs.core.Response;
-
-import io.helidon.common.InputStreamHelper;
 import io.helidon.common.http.DataChunk;
 import io.helidon.common.http.Http;
-import io.helidon.common.reactive.ReactiveStreamsAdapter;
+import io.helidon.common.http.MediaType;
+import io.helidon.common.reactive.Multi;
+import io.helidon.webclient.WebClient;
 
-import org.glassfish.jersey.client.JerseyClient;
-import org.glassfish.jersey.client.JerseyClientBuilder;
-import org.glassfish.jersey.client.JerseyWebTarget;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
-import reactor.core.publisher.Flux;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.collection.IsArrayWithSize.arrayWithSize;
@@ -72,21 +62,18 @@ public class ResponseOrderingTest {
      * @param args not used
      */
     public static void main(String[] args) throws InterruptedException, ExecutionException, TimeoutException {
+
         Routing routing = Routing.builder()
                 .any("/multi", (req, res) -> {
-                    CompletionStage<? extends String> content = req.content().as(String.class);
-
-                    content.whenComplete((o, throwable) -> {
+                    req.content().as(String.class).whenComplete((o, throwable) -> {
                         queue.add(res.requestId());
-
                         res.status(201);
                         res.send("" + res.requestId())
                                 .exceptionally(throwable1 -> {
                                     errorQueue.add(throwable1);
                                     return null;
                                 });
-                        System.out.println("Response sent: " + res.requestId() + " .. " + Thread.currentThread()
-                                .toString());
+                        System.out.println("Response sent: " + res.requestId() + " .. " + Thread.currentThread().toString());
                     }).exceptionally(throwable -> {
                         throwable.printStackTrace();
                         res.status(500);
@@ -96,13 +83,10 @@ public class ResponseOrderingTest {
                 })
                 .any("/stream", (req, res) -> {
                     res.status(Http.Status.ACCEPTED_202);
-
-                    Flux<DataChunk> flux =
-                            ReactiveStreamsAdapter.publisherFromFlow(req.content())
-                                    .map(chunk -> {
-                                        return DataChunk.create(false, chunk.data(), chunk::release);
-                                    });
-                    res.send(ReactiveStreamsAdapter.publisherToFlow(flux));
+                    Multi<DataChunk> multi = Multi.create(req.content()).map(chunk -> {
+                        return DataChunk.create(false, chunk::release, chunk.data());
+                    });
+                    res.send(multi);
                 })
                 .error(Throwable.class, (req, res, ex) -> {
                     errorQueue.add(ex);
@@ -116,7 +100,6 @@ public class ResponseOrderingTest {
                 .thenRun(() -> System.out.println("UP and RUNNING!"))
                 .toCompletableFuture()
                 .get(10, TimeUnit.SECONDS);
-
         webServer.whenShutdown().thenRun(() -> System.out.println("=============== SERVER IS DOWN ================!"));
     }
 
@@ -132,18 +115,19 @@ public class ResponseOrderingTest {
 
     @Test
     public void testOrdering() throws Exception {
-        JerseyClient client = JerseyClientBuilder.createClient();
-
-        JerseyWebTarget target = client.target("http://0.0.0.0:" + webServer.port());
+        WebClient webClient = WebClient.builder()
+                .baseUri("http://0.0.0.0:" + webServer.port())
+                .build();
         ArrayList<Long> returnedIds = new ArrayList<>();
 
         int i1 = Optional.ofNullable(System.getenv("REQUESTS_COUNT")).map(Integer::valueOf).orElse(10);
         for (int i = 0; i < i1; i++) {
-            Response response = target.path("multi").request().get();
-            assertThat(response.getStatusInfo().getFamily(), is(Response.Status.Family.SUCCESSFUL));
-
-            String entity = response.readEntity(String.class);
-            returnedIds.add(Long.valueOf(entity));
+            webClient.get()
+                    .path("multi")
+                    .request(String.class)
+                    .thenAccept(it -> returnedIds.add(Long.valueOf(it)))
+                    .toCompletableFuture()
+                    .get();
         }
 
         assertThat(returnedIds.toArray(), allOf(arrayWithSize(i1), is(queue.toArray())));
@@ -152,22 +136,20 @@ public class ResponseOrderingTest {
 
     @Test
     public void testContentOrdering() throws Exception {
-        JerseyClient client = JerseyClientBuilder.createClient();
-
-        JerseyWebTarget target = client.target("http://0.0.0.0:" + webServer.port()).path("stream");
+        WebClient webClient = WebClient.builder()
+                .baseUri("http://0.0.0.0:" + webServer.port() + "/stream")
+                .build();
 
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < 10000; i++) {
             sb.append(i)
                     .append("\n");
         }
-        ByteArrayInputStream inputStream = new ByteArrayInputStream(sb.toString().getBytes());
 
-        Response response = target.request().post(Entity.entity(inputStream, MediaType.APPLICATION_OCTET_STREAM_TYPE));
-        InputStream resultStream = response.readEntity(InputStream.class);
-
-        String s = new String(InputStreamHelper.readAllBytes(resultStream));
-        assertThat(s, is(sb.toString()));
+        webClient.post()
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .submit(sb.toString().getBytes(), String.class)
+                .thenAccept(it -> assertThat(it, is(sb.toString())));
     }
 
     private String exceptions() {

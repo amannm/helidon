@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2021 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,94 +16,87 @@
  */
 package io.helidon.openapi;
 
+import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.StringReader;
+import java.io.StringWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
+import javax.json.Json;
+import javax.json.JsonArray;
+import javax.json.JsonNumber;
+import javax.json.JsonObject;
+import javax.json.JsonReader;
+import javax.json.JsonReaderFactory;
+import javax.json.JsonString;
+import javax.json.JsonValue;
+
 import io.helidon.common.http.Http;
 import io.helidon.common.http.MediaType;
 import io.helidon.config.Config;
-import io.helidon.media.jsonp.server.JsonSupport;
+import io.helidon.media.common.MessageBodyReaderContext;
+import io.helidon.media.common.MessageBodyWriterContext;
+import io.helidon.media.jsonp.JsonpSupport;
+import io.helidon.openapi.internal.OpenAPIConfigImpl;
 import io.helidon.webserver.Routing;
 import io.helidon.webserver.ServerRequest;
 import io.helidon.webserver.ServerResponse;
 import io.helidon.webserver.Service;
+import io.helidon.webserver.cors.CorsEnabledServiceHelper;
+import io.helidon.webserver.cors.CrossOriginConfig;
 
 import io.smallrye.openapi.api.OpenApiConfig;
 import io.smallrye.openapi.api.OpenApiDocument;
+import io.smallrye.openapi.api.models.OpenAPIImpl;
+import io.smallrye.openapi.api.util.MergeUtil;
 import io.smallrye.openapi.runtime.OpenApiProcessor;
 import io.smallrye.openapi.runtime.OpenApiStaticFile;
 import io.smallrye.openapi.runtime.io.OpenApiSerializer;
 import io.smallrye.openapi.runtime.io.OpenApiSerializer.Format;
-import org.jboss.jandex.IndexReader;
+import io.smallrye.openapi.runtime.scanner.AnnotationScannerExtension;
+import io.smallrye.openapi.runtime.scanner.OpenApiAnnotationScanner;
+import org.eclipse.microprofile.openapi.models.Extensible;
+import org.eclipse.microprofile.openapi.models.OpenAPI;
+import org.eclipse.microprofile.openapi.models.Operation;
+import org.eclipse.microprofile.openapi.models.PathItem;
+import org.eclipse.microprofile.openapi.models.Reference;
+import org.eclipse.microprofile.openapi.models.media.Schema;
+import org.eclipse.microprofile.openapi.models.servers.ServerVariable;
+import org.jboss.jandex.IndexView;
+import org.yaml.snakeyaml.TypeDescription;
+
+import static io.helidon.webserver.cors.CorsEnabledServiceHelper.CORS_CONFIG_KEY;
 
 /**
  * Provides an endpoint and supporting logic for returning an OpenAPI document
- * that describes the endpoints handled by the application.
+ * that describes the endpoints handled by the server.
  * <p>
- * The application can use the {@link Builder} to set OpenAPI-related
- * attributes, including:
- * <table>
- * <caption>OpenAPI-related Settings</caption>
- * <tr>
- * <th>Method on {@link Builder}</th>
- * <th>Purpose</th>
- * </tr>
- * <tr>
- * <td>{@link Builder#config}</td>
- * <td>sets multiple OpenAPI-related items from a {@link Config} object</td>
- * </tr>
- * <tr>
- * <td>{@link Builder#staticFile}</td>
- * <td>sets the static OpenAPI document file (defaults in order to {@code openapi.yaml},
- * {@code openapi.yml}, or {@code openapi.json})</td>
- * </tr>
- * <tr>
- * <td>{@link Builder#enableAnnotationProcessing}</td>
- * <td>sets whether OpenAPI annotations should be processed</td>
- * </tr>
- * <tr>
- * <td>{@link Builder#webContext}</td>
- * <td>sets the endpoint path that will serve the OpenAPI document</td>
- * </tr>
- * <tr>
- * <td>{@link Builder#modelReader}</td>
- * <td>sets the application-provided class for adding to the OpenAPI document</td>
- * </tr>
- * <tr>
- * <td>{@link Builder#filter}</td>
- * <td>sets the application-provided class for filtering OpenAPI document information</td>
- * </tr>
- * <tr>
- * <td>{@link Builder#servers}</td>
- * <td>sets the servers to be reported in the OpenAPI document</td>
- * </tr>
- * <tr>
- * <td>{@link Builder#addOperationServer}</td>
- * <td>associates a server with a given operation ID</td>
- * </tr>
- * <tr>
- * <td>{@link Builder#addPathServer}</td>
- * <td>associates a server with a given path</td>
- * </tr>
- * </table>
- * If the application uses none of these builder methods and does not provide
- * a static {@code openapi} file, then the {@code /openapi} endpoint responds with
- * a nearly-empty OpenAPI document.
+ * The server can use the {@link Builder} to set OpenAPI-related attributes. If
+ * the server uses none of these builder methods and does not provide a static
+ * {@code openapi} file, then the {@code /openapi} endpoint responds with a
+ * nearly-empty OpenAPI document.
+ *
  */
-public class OpenAPISupport implements Service {
+public abstract class OpenAPISupport implements Service {
 
     /**
      * Default path for serving the OpenAPI document.
@@ -111,135 +104,239 @@ public class OpenAPISupport implements Service {
     public static final String DEFAULT_WEB_CONTEXT = "/openapi";
 
     /**
-     * Default media type used in responses in absence of incoming Accept header.
+     * Default media type used in responses in absence of incoming Accept
+     * header.
      */
-    public static final MediaType DEFAULT_RESPONSE_MEDIA_TYPE =  MediaType.APPLICATION_OPENAPI_YAML;
+    public static final MediaType DEFAULT_RESPONSE_MEDIA_TYPE = MediaType.APPLICATION_OPENAPI_YAML;
 
+    /**
+     * Path to the Jandex index file.
+     */
     private static final Logger LOGGER = Logger.getLogger(OpenAPISupport.class.getName());
 
-    private static final String DEFAULT_STATIC_FILE_PATH_PREFIX = "/openapi.";
+    private static final String DEFAULT_STATIC_FILE_PATH_PREFIX = "META-INF/openapi.";
     private static final String OPENAPI_EXPLICIT_STATIC_FILE_LOG_MESSAGE_FORMAT = "Using specified OpenAPI static file %s";
     private static final String OPENAPI_DEFAULTED_STATIC_FILE_LOG_MESSAGE_FORMAT = "Using default OpenAPI static file %s";
+    private static final String FEATURE_NAME = "OpenAPI";
 
-    private static final String JANDEX_INDEX_PATH = "/META-INF/jandex.idx";
+    private static final JsonReaderFactory JSON_READER_FACTORY = Json.createReaderFactory(Collections.emptyMap());
 
-    private final Optional<String> webContext;
-    private final Optional<String> staticFilePath;
-    private final OpenApiConfig openAPIConfig;
+    /**
+     * The SnakeYAMLParserHelper is generated by a maven plug-in.
+     */
+    private static SnakeYAMLParserHelper<ExpandedTypeDescription> helper = null;
 
-    private boolean isAnnotationProcessingEnabled = false;
+    private final String webContext;
 
-    private final Map<MediaType, String> cachedDocuments = new HashMap<>();
+    private OpenAPI model = null;
+    private final ConcurrentMap<Format, String> cachedDocuments = new ConcurrentHashMap<>();
+    private final Map<Class<?>, ExpandedTypeDescription> implsToTypes;
+    private final CorsEnabledServiceHelper corsEnabledServiceHelper;
 
-    private OpenAPISupport(final Builder builder) {
-        webContext = builder.webContext;
-        staticFilePath = builder.staticFilePath;
-        this.isAnnotationProcessingEnabled = builder.isAnnotationProcessingEnabled;
-        this.openAPIConfig = builder.apiConfigBuilder.build();
+    /*
+     * To handle the MP case, we must defer constructing the OpenAPI in-memory model until after the server has instantiated
+     * the Application instances. By then the builder has already been used to build the OpenAPISupport object. So save the
+     * following raw materials so we can construct the model at that later time.
+     */
+    private final OpenApiConfig openApiConfig;
+    private final OpenApiStaticFile openApiStaticFile;
+    private final Supplier<List<? extends IndexView>> indexViewsSupplier;
+
+    protected OpenAPISupport(Builder<?> builder) {
+        adjustTypeDescriptions(helper().types());
+        implsToTypes = buildImplsToTypes(helper());
+        webContext = builder.webContext();
+        corsEnabledServiceHelper = CorsEnabledServiceHelper.create(FEATURE_NAME, builder.crossOriginConfig);
+        openApiConfig = builder.openAPIConfig();
+        openApiStaticFile = builder.staticFile();
+        indexViewsSupplier = builder.indexViewsSupplier();
     }
 
     @Override
-    public void update(final Routing.Rules rules) {
-        try {
-            initializeOpenAPIDocument(openAPIConfig);
-        } catch (IOException ex) {
-            throw new RuntimeException("Error initializing OpenAPI information", ex);
-        }
-        String webContextPath = webContext.orElse(DEFAULT_WEB_CONTEXT);
-        if (webContext.isPresent()) {
-            LOGGER.log(Level.FINE, "OpenAPI path set to {0}", webContextPath);
-        } else {
-            LOGGER.log(Level.FINE, "OpenAPI path defaulting to {0}", webContextPath);
-        }
-        rules.get(JsonSupport.create())
-                .get(webContextPath, this::prepareResponse);
+    public void update(Routing.Rules rules) {
+        configureEndpoint(rules);
     }
 
     /**
-     * Prepares the information used to create the OpenAPI document for endpoints
-     * in this application.
+     * Sets up the OpenAPI endpoint by adding routing to the specified rules
+     * set.
      *
-     * @param config {@code OpenApiConfig} object describing paths, servers, etc.
-     * @throws IOException in case of errors reading any existing static OpenAPI document
+     * @param rules routing rules to be augmented with OpenAPI endpoint
      */
-    void initializeOpenAPIDocument(final OpenApiConfig config) throws IOException {
-        try (OpenApiStaticFile staticFile = buildOpenAPIStaticFile()) {
-            OpenApiDocument.INSTANCE.reset();
-            OpenApiDocument.INSTANCE.config(config);
-            OpenApiDocument.INSTANCE.modelFromReader(OpenApiProcessor.modelFromReader(config, getContextClassLoader()));
-            OpenApiDocument.INSTANCE.modelFromStaticFile(OpenApiProcessor.modelFromStaticFile(staticFile));
-            if (isAnnotationProcessingEnabled) {
-                    expandModelUsingAnnotations(config);
-            } else {
-                LOGGER.log(Level.FINE, "OpenAPI Annotation processing is disabled");
+    public void configureEndpoint(Routing.Rules rules) {
+
+        rules.get(this::registerJsonpSupport)
+                .any(webContext, corsEnabledServiceHelper.processor())
+                .get(webContext, this::prepareResponse);
+    }
+
+    /**
+     * Triggers preparation of the model from external code.
+     */
+    protected void prepareModel() {
+        model();
+    }
+
+    private synchronized OpenAPI model() {
+        if (model == null) {
+            model = prepareModel(openApiConfig, openApiStaticFile, indexViewsSupplier.get());
+        }
+        return model;
+    }
+
+    private void registerJsonpSupport(ServerRequest req, ServerResponse res) {
+        MessageBodyReaderContext readerContext = req.content().readerContext();
+        MessageBodyWriterContext writerContext = res.writerContext();
+        JsonpSupport.create().register(readerContext, writerContext);
+        req.next();
+    }
+
+    static synchronized SnakeYAMLParserHelper<ExpandedTypeDescription> helper() {
+        if (helper == null) {
+            helper = SnakeYAMLParserHelper.create(ExpandedTypeDescription::create);
+            adjustTypeDescriptions(helper.types());
+        }
+        return helper;
+    }
+
+    static Map<Class<?>, ExpandedTypeDescription> buildImplsToTypes(SnakeYAMLParserHelper<ExpandedTypeDescription> helper) {
+        return Collections.unmodifiableMap(helper.entrySet().stream()
+                .map(Map.Entry::getValue)
+                .collect(Collectors.toMap(ExpandedTypeDescription::impl, Function.identity())));
+    }
+
+    private static void adjustTypeDescriptions(Map<Class<?>, ExpandedTypeDescription> types) {
+        /*
+         * We need to adjust the {@code TypeDescription} objects set up by the generated {@code SnakeYAMLParserHelper} class
+         * because there are some OpenAPI-specific issues that the general-purpose helper generator cannot know about.
+         */
+
+        /*
+         * In the OpenAPI document, HTTP methods are expressed in lower-case. But the associated Java methods on the PathItem
+         * class use the HTTP method names in upper-case. So for each HTTP method, "add" a property to PathItem's type
+         * description using the lower-case name but upper-case Java methods and exclude the upper-case property that
+         * SnakeYAML's automatic analysis of the class already created.
+         */
+        ExpandedTypeDescription pathItemTD = types.get(PathItem.class);
+        for (PathItem.HttpMethod m : PathItem.HttpMethod.values()) {
+            pathItemTD.substituteProperty(m.name().toLowerCase(), Operation.class, getter(m), setter(m));
+            pathItemTD.addExcludes(m.name());
+        }
+
+        /*
+         * An OpenAPI document can contain a property named "enum" for Schema and ServerVariable, but the related Java methods
+         * use "enumeration".
+         */
+        Set.<Class<?>>of(Schema.class, ServerVariable.class).forEach(c -> {
+            ExpandedTypeDescription tdWithEnumeration = types.get(c);
+            tdWithEnumeration.substituteProperty("enum", List.class, "getEnumeration", "setEnumeration");
+            tdWithEnumeration.addPropertyParameters("enum", String.class);
+            tdWithEnumeration.addExcludes("enumeration");
+        });
+
+        /*
+         * SnakeYAML derives properties only from methods declared directly by each OpenAPI interface, not from methods defined
+         *  on other interfaces which the original one extends. Those we have to handle explicitly.
+         */
+        for (ExpandedTypeDescription td : types.values()) {
+            if (Extensible.class.isAssignableFrom(td.getType())) {
+                td.addExtensions();
             }
-            OpenApiDocument.INSTANCE.filter(OpenApiProcessor.getFilter(config, getContextClassLoader()));
-            OpenApiDocument.INSTANCE.initialize();
+            if (td.hasDefaultProperty()) {
+                td.substituteProperty("default", Object.class, "getDefaultValue", "setDefaultValue");
+                td.addExcludes("defaultValue");
+            }
+            if (isRef(td)) {
+                td.addRef();
+            }
         }
     }
 
-    private void expandModelUsingAnnotations(final OpenApiConfig config) throws IOException {
-        try (InputStream jandexIS = getClass().getResourceAsStream(JANDEX_INDEX_PATH)) {
-            if (jandexIS == null) {
-                LOGGER.log(Level.FINE,
-                        "OpenAPI Annotation processing enabled but jandex index {0} not found; "
-                        + "continuing without scanning for OpenAPI-related annotations", JANDEX_INDEX_PATH);
-                return;
+    private static boolean isRef(TypeDescription td) {
+        for (Class<?> c : td.getType().getInterfaces()) {
+            if (c.equals(Reference.class)) {
+                return true;
             }
-        LOGGER.log(Level.FINE, "Using Jandex index at {0}", JANDEX_INDEX_PATH);
-        IndexReader ir = new IndexReader(jandexIS);
-        OpenApiDocument.INSTANCE.modelFromAnnotations(OpenApiProcessor.modelFromAnnotations(config, ir.read()));
         }
+        return false;
+    }
+
+    private static String getter(PathItem.HttpMethod method) {
+        return methodName("get", method);
+    }
+
+    private static String setter(PathItem.HttpMethod method) {
+        return methodName("set", method);
+    }
+
+    private static String methodName(String operation, PathItem.HttpMethod method) {
+        return operation + method.name();
+    }
+
+    /**
+     * Prepares the OpenAPI model that later will be used to create the OpenAPI
+     * document for endpoints in this application.
+     *
+     * @param config {@code OpenApiConfig} object describing paths, servers, etc.
+     * @param staticFile the static file, if any, to be included in the resulting model
+     * @param filteredIndexViews possibly empty list of FilteredIndexViews to use in harvesting definitions from the code
+     * @return the OpenAPI model
+     * @throws RuntimeException in case of errors reading any existing static
+     * OpenAPI document
+     */
+    private OpenAPI prepareModel(OpenApiConfig config, OpenApiStaticFile staticFile,
+            List<? extends IndexView> filteredIndexViews) {
+        try {
+            synchronized (OpenApiDocument.INSTANCE) {
+                OpenApiDocument.INSTANCE.reset();
+                OpenApiDocument.INSTANCE.config(config);
+                OpenApiDocument.INSTANCE.modelFromReader(OpenApiProcessor.modelFromReader(config, getContextClassLoader()));
+                if (staticFile != null) {
+                    OpenApiDocument.INSTANCE.modelFromStaticFile(OpenAPIParser.parse(helper().types(), staticFile.getContent(),
+                            OpenAPIMediaType.byFormat(staticFile.getFormat())));
+                }
+                if (isAnnotationProcessingEnabled(config)) {
+                    expandModelUsingAnnotations(config, filteredIndexViews);
+                } else {
+                    LOGGER.log(Level.FINE, "OpenAPI Annotation processing is disabled");
+                }
+                OpenApiDocument.INSTANCE.filter(OpenApiProcessor.getFilter(config, getContextClassLoader()));
+                OpenApiDocument.INSTANCE.initialize();
+                return OpenApiDocument.INSTANCE.get();
+            }
+        } catch (IOException ex) {
+            throw new RuntimeException("Error initializing OpenAPI information", ex);
+        }
+    }
+
+    private boolean isAnnotationProcessingEnabled(OpenApiConfig config) {
+        return !config.scanDisable();
+    }
+
+    private void expandModelUsingAnnotations(OpenApiConfig config, List<? extends IndexView> filteredIndexViews) {
+        if (filteredIndexViews.isEmpty() || config.scanDisable()) {
+            return;
+        }
+
+        /*
+         * Conduct a SmallRye OpenAPI annotation scan for each filtered index view, merging the resulting OpenAPI models into one.
+         * The AtomicReference is effectively final so we can update the actual reference from inside the lambda.
+         */
+        AtomicReference<OpenAPIImpl> aggregateModelRef = new AtomicReference<>(new OpenAPIImpl()); // Start with skeletal model
+        filteredIndexViews.forEach(filteredIndexView -> {
+                OpenApiAnnotationScanner scanner = new OpenApiAnnotationScanner(config, filteredIndexView,
+                        List.of(new HelidonAnnotationScannerExtension()));
+                OpenAPIImpl modelForApp = scanner.scan();
+                aggregateModelRef.set(MergeUtil.merge(aggregateModelRef.get(), modelForApp));
+            });
+        OpenApiDocument.INSTANCE.modelFromAnnotations(aggregateModelRef.get());
     }
 
     private static ClassLoader getContextClassLoader() {
         return Thread.currentThread().getContextClassLoader();
     }
 
-    private OpenApiStaticFile buildOpenAPIStaticFile() {
-
-        return staticFilePath.isPresent() ? getExplicitStaticFile() : getDefaultStaticFile();
-    }
-
-    private OpenApiStaticFile getExplicitStaticFile() {
-        Path path = Paths.get(staticFilePath.get());
-        final String specifiedFileType = typeFromPath(path);
-        final OpenAPIMediaTypes specifiedMediaType = OpenAPIMediaTypes.byFileType(specifiedFileType);
-
-        if (specifiedMediaType == null) {
-            throw new IllegalArgumentException("OpenAPI file path "
-                    + path.toAbsolutePath().toString()
-                    + " is not one of recognized types: "
-                    + OpenAPIMediaTypes.recognizedFileTypes());
-        }
-        final InputStream is;
-        try {
-            is = Files.newInputStream(path);
-        } catch (IOException ex) {
-            throw new IllegalArgumentException("OpenAPI file "
-                    + path.toAbsolutePath().toString()
-                    + " was specified but was not found");
-        }
-
-        try {
-            LOGGER.log(Level.FINE,
-               () ->  String.format(
-                       OPENAPI_EXPLICIT_STATIC_FILE_LOG_MESSAGE_FORMAT,
-                       path.toAbsolutePath().toString()));
-            return new OpenApiStaticFile(is, specifiedMediaType.format());
-        } catch (Throwable th) {
-            try {
-                is.close();
-            } catch (IOException ex) {
-                LOGGER.log(Level.FINE,
-                        "Encountered an error closing an input stream "
-                        + "after catching an unrelated error", ex);
-            }
-            throw th;
-        }
-    }
-
-    private String typeFromPath(Path path) {
+    private static String typeFromPath(Path path) {
         final Path staticFileNamePath = path.getFileName();
         if (staticFileNamePath == null) {
             throw new IllegalArgumentException("File path "
@@ -251,49 +348,6 @@ public class OpenAPISupport implements Service {
         return specifiedFileType;
     }
 
-    private OpenApiStaticFile getDefaultStaticFile() {
-        final List<String> candidatePaths = LOGGER.isLoggable(Level.FINER) ? new ArrayList<>() : null;
-        for (OpenAPIMediaTypes candidate : OpenAPIMediaTypes.values()) {
-            for (String type : candidate.matchingTypes()) {
-                String candidatePath = DEFAULT_STATIC_FILE_PATH_PREFIX + type;
-                InputStream is = null;
-                try {
-                    is = getClass().getResourceAsStream(candidatePath);
-                    if (is != null) {
-                        Path path = Paths.get(candidatePath);
-                        LOGGER.log(Level.FINE, () -> String.format(
-                                OPENAPI_DEFAULTED_STATIC_FILE_LOG_MESSAGE_FORMAT,
-                                path.toAbsolutePath().toString()));
-                        return new OpenApiStaticFile(is, candidate.format());
-                    }
-                    if (candidatePaths != null) {
-                        candidatePaths.add(candidatePath);
-                    }
-                } catch (Throwable th) {
-                    if (is != null) {
-                        try {
-                            is.close();
-                        } catch (IOException ex) {
-                            LOGGER.log(Level.FINE,
-                                    "Encountered an error closing an input stream "
-                                    + "after catching an unrelated error", ex);
-                        }
-                    }
-                    throw th;
-                }
-            }
-        }
-        if (candidatePaths != null) {
-            LOGGER.log(Level.FINER,
-                candidatePaths.stream()
-                        .collect(Collectors.joining(
-                                "No default static OpenAPI description file found; checked [",
-                                ",",
-                                "]")));
-        }
-        return null;
-    }
-
     private void prepareResponse(ServerRequest req, ServerResponse resp) {
 
         try {
@@ -302,7 +356,7 @@ public class OpenAPISupport implements Service {
             resp.status(Http.Status.OK_200);
             resp.headers().add(Http.Header.CONTENT_TYPE, resultMediaType.toString());
             resp.send(openAPIDocument);
-        } catch (IOException ex) {
+        } catch (Exception ex) {
             resp.status(Http.Status.INTERNAL_SERVER_ERROR_500);
             resp.send("Error serializing OpenAPI document");
             LOGGER.log(Level.SEVERE, "Error serializing OpenAPI document", ex);
@@ -318,26 +372,35 @@ public class OpenAPISupport implements Service {
      * from its underlying data
      */
     String prepareDocument(MediaType resultMediaType) throws IOException {
-        if (!OpenApiDocument.INSTANCE.isSet()) {
-            throw new IllegalStateException("OpenApiDocument used but has not been initialized");
-        }
-        synchronized (cachedDocuments) {
-            String result = cachedDocuments.get(resultMediaType);
-            if (result == null) {
-                final Format resultFormat = OpenAPIMediaTypes.byMediaType(resultMediaType).format();
-                result = OpenApiSerializer.serialize(
-                        OpenApiDocument.INSTANCE.get(), resultFormat);
-                cachedDocuments.put(resultMediaType, result);
-                LOGGER.log(Level.FINER,
-                        "Created and cached OpenAPI document in {0} format",
-                        resultFormat.toString());
-            } else {
-                LOGGER.log(Level.FINER,
-                        "Using previously-cached OpenAPI document in {0} format",
-                        OpenAPIMediaTypes.DEFAULT_TYPE.toString());
-            }
-            return result;
-        }
+        OpenAPIMediaType matchingOpenAPIMediaType
+                = OpenAPIMediaType.byMediaType(resultMediaType)
+                .orElseGet(() -> {
+                    LOGGER.log(Level.FINER,
+                            () -> String.format(
+                                    "Requested media type %s not supported; using default",
+                                    resultMediaType.toString()));
+                    return OpenAPIMediaType.DEFAULT_TYPE;
+                });
+
+
+        final Format resultFormat = matchingOpenAPIMediaType.format();
+
+        String result = cachedDocuments.computeIfAbsent(resultFormat,
+                fmt -> {
+                    String r = formatDocument(fmt);
+                    LOGGER.log(Level.FINER,
+                            "Created and cached OpenAPI document in {0} format",
+                            fmt.toString());
+                    return r;
+                });
+        return result;
+    }
+
+    private String formatDocument(Format fmt) {
+        StringWriter sw = new StringWriter();
+        Serializer.serialize(helper().types(), implsToTypes, model(), fmt, sw);
+        return sw.toString();
+
     }
 
     private MediaType chooseResponseMediaType(ServerRequest req) {
@@ -345,37 +408,137 @@ public class OpenAPISupport implements Service {
          * Response media type default is application/vnd.oai.openapi (YAML)
          * unless otherwise specified.
          */
-        MediaType resultMediaType = req.headers()
-                .bestAccepted(OpenAPIMediaTypes.preferredOrdering())
-                .orElse(DEFAULT_RESPONSE_MEDIA_TYPE);
+        final Optional<MediaType> requestedMediaType = req.headers()
+                .bestAccepted(OpenAPIMediaType.preferredOrdering());
+
+        final MediaType resultMediaType = requestedMediaType
+                .orElseGet(() -> {
+                    LOGGER.log(Level.FINER,
+                            () -> String.format("Did not recognize requested media type %s; responding with default %s",
+                                    req.headers().acceptedTypes(),
+                                    DEFAULT_RESPONSE_MEDIA_TYPE.toString()));
+                    return DEFAULT_RESPONSE_MEDIA_TYPE;
+                });
         return resultMediaType;
     }
 
     /**
-     * Abstraction of the different representations of a static OpenAPI
-     * document file and the file type(s) they correspond to.
-     * <p>
-     * Each {@code OpenAPIMediaType} stands for a single format (e.g., yaml, json).
-     * That said, each can map to multiple file types (e.g.,
-     * yml and yaml) and multiple actual media types (the proposed OpenAPI media
-     * type vnd.oai.openapi and application/x-yaml).
+     * Extension we want SmallRye's OpenAPI implementation to use for parsing the JSON content in Extension annotations.
      */
-    private enum OpenAPIMediaTypes {
+    private static class HelidonAnnotationScannerExtension implements AnnotationScannerExtension {
+
+        @Override
+        public Object parseExtension(String key, String value) {
+
+            // Inspired by SmallRye's JsonUtil#parseValue method.
+            if (value == null) {
+                return null;
+            }
+
+            value = value.trim();
+
+            if ("true".equalsIgnoreCase(value) || "false".equalsIgnoreCase(value)) {
+                return Boolean.valueOf(value);
+            }
+
+            // See if we should parse the value fully.
+            switch (value.charAt(0)) {
+                case '{':
+                case '[':
+                case '-':
+                case '0':
+                case '1':
+                case '2':
+                case '3':
+                case '4':
+                case '5':
+                case '6':
+                case '7':
+                case '8':
+                case '9':
+                    try {
+                        JsonReader reader = JSON_READER_FACTORY.createReader(new StringReader(value));
+                        JsonValue jsonValue = reader.readValue();
+                        return convertJsonValue(jsonValue);
+                    } catch (Exception ex) {
+                        LOGGER.log(Level.SEVERE, String.format("Error parsing extension key: %s, value: %s", key, value), ex);
+                    }
+                    break;
+
+                default:
+                    break;
+            }
+
+            // Treat as JSON string.
+            return value;
+        }
+
+        private static Object convertJsonValue(JsonValue jsonValue) {
+            switch (jsonValue.getValueType()) {
+                case ARRAY:
+                    JsonArray jsonArray = jsonValue.asJsonArray();
+                    return jsonArray.stream()
+                            .map(OpenAPISupport.HelidonAnnotationScannerExtension::convertJsonValue)
+                            .collect(Collectors.toList());
+
+                case FALSE:
+                    return Boolean.FALSE;
+
+                case TRUE:
+                    return Boolean.TRUE;
+
+                case NULL:
+                    return null;
+
+                case STRING:
+                    return JsonString.class.cast(jsonValue).getString();
+
+                case NUMBER:
+                    JsonNumber jsonNumber = JsonNumber.class.cast(jsonValue);
+                    return jsonNumber.numberValue();
+
+                case OBJECT:
+                    JsonObject jsonObject = jsonValue.asJsonObject();
+                    return jsonObject.entrySet().stream()
+                            .collect(Collectors.toMap(Map.Entry::getKey, entry -> convertJsonValue(entry.getValue())));
+
+                default:
+                    return jsonValue.toString();
+            }
+        }
+    }
+
+    /**
+     * Abstraction of the different representations of a static OpenAPI document
+     * file and the file type(s) they correspond to.
+     * <p>
+     * Each {@code OpenAPIMediaType} stands for a single format (e.g., yaml,
+     * json). That said, each can map to multiple file types (e.g., yml and
+     * yaml) and multiple actual media types (the proposed OpenAPI media type
+     * vnd.oai.openapi and various other YAML types proposed or in use).
+     */
+    enum OpenAPIMediaType {
 
         JSON(Format.JSON,
-            new MediaType[] {MediaType.APPLICATION_OPENAPI_JSON, MediaType.APPLICATION_JSON},
-            "json"),
+                new MediaType[]{MediaType.APPLICATION_OPENAPI_JSON,
+                    MediaType.APPLICATION_JSON},
+                "json"),
         YAML(Format.YAML,
-            new MediaType[] {MediaType.APPLICATION_OPENAPI_YAML, MediaType.APPLICATION_YAML},
-            "yaml", "yml");
+                new MediaType[]{MediaType.APPLICATION_OPENAPI_YAML,
+                    MediaType.APPLICATION_X_YAML,
+                    MediaType.APPLICATION_YAML,
+                    MediaType.TEXT_PLAIN,
+                    MediaType.TEXT_X_YAML,
+                    MediaType.TEXT_YAML},
+                "yaml", "yml");
 
-        private static final OpenAPIMediaTypes DEFAULT_TYPE = YAML;
+        private static final OpenAPIMediaType DEFAULT_TYPE = YAML;
 
         private final Format format;
         private final List<String> fileTypes;
         private final List<MediaType> mediaTypes;
 
-        OpenAPIMediaTypes(Format format, MediaType[] mediaTypes, String... fileTypes) {
+        OpenAPIMediaType(Format format, MediaType[] mediaTypes, String... fileTypes) {
             this.format = format;
             this.mediaTypes = Arrays.asList(mediaTypes);
             this.fileTypes = new ArrayList<>(Arrays.asList(fileTypes));
@@ -389,8 +552,8 @@ public class OpenAPISupport implements Service {
             return fileTypes;
         }
 
-        private static OpenAPIMediaTypes byFileType(String fileType) {
-            for (OpenAPIMediaTypes candidateType : values()) {
+        private static OpenAPIMediaType byFileType(String fileType) {
+            for (OpenAPIMediaType candidateType : values()) {
                 if (candidateType.matchingTypes().contains(fileType)) {
                     return candidateType;
                 }
@@ -398,34 +561,48 @@ public class OpenAPISupport implements Service {
             return null;
         }
 
-        private static OpenAPIMediaTypes byMediaType(MediaType mt) {
-            for (OpenAPIMediaTypes candidateType : values()) {
+        private static Optional<OpenAPIMediaType> byMediaType(MediaType mt) {
+            for (OpenAPIMediaType candidateType : values()) {
                 if (candidateType.mediaTypes.contains(mt)) {
+                    return Optional.of(candidateType);
+                }
+            }
+            return Optional.empty();
+        }
+
+        private static List<String> recognizedFileTypes() {
+            final List<String> result = new ArrayList<>();
+            for (OpenAPIMediaType type : values()) {
+                result.addAll(type.fileTypes);
+            }
+            return result;
+        }
+
+        private static OpenAPIMediaType byFormat(Format format) {
+            for (OpenAPIMediaType candidateType : values()) {
+                if (candidateType.format.equals(format)) {
                     return candidateType;
                 }
             }
             return null;
         }
 
-        private static List<String> recognizedFileTypes() {
-            final List<String> result = new ArrayList<>();
-            for (OpenAPIMediaTypes type : values()) {
-                result.addAll(type.fileTypes);
-            }
-            return result;
-        }
-
         /**
          * Media types we recognize as OpenAPI, in order of preference.
          *
-         * @return MediaTypes in order that we recognize them as OpenAPI content.
+         * @return MediaTypes in order that we recognize them as OpenAPI
+         * content.
          */
         private static MediaType[] preferredOrdering() {
-            return new MediaType[] {
-                MediaType.APPLICATION_OPENAPI_YAML,
-                MediaType.APPLICATION_YAML,
-                MediaType.APPLICATION_OPENAPI_JSON,
-                MediaType.APPLICATION_JSON
+            return new MediaType[]{
+                    MediaType.APPLICATION_OPENAPI_YAML,
+                    MediaType.APPLICATION_X_YAML,
+                    MediaType.APPLICATION_YAML,
+                    MediaType.APPLICATION_OPENAPI_JSON,
+                    MediaType.APPLICATION_JSON,
+                    MediaType.TEXT_X_YAML,
+                    MediaType.TEXT_YAML,
+                    MediaType.TEXT_PLAIN
             };
         }
     }
@@ -435,8 +612,8 @@ public class OpenAPISupport implements Service {
      *
      * @return new Builder
      */
-    public static Builder builder() {
-        return new Builder();
+    public static SEOpenAPISupportBuilder builder() {
+        return builderSE();
     }
 
     /**
@@ -445,165 +622,251 @@ public class OpenAPISupport implements Service {
      * @return new OpenAPISUpport
      */
     public static OpenAPISupport create() {
-        return builder().build();
+        return builderSE().build();
     }
 
     /**
      * Creates a new {@link OpenAPISupport} instance using the
-     * '{@value Builder#CONFIG_PREFIX}' portion of the provided {@link Config} object.
+     * 'openapi' portion of the provided
+     * {@link Config} object.
      *
      * @param config {@code Config} object containing OpenAPI-related settings
-     * @return new {@code OpenAPISupport} instance created using the config settings
+     * @return new {@code OpenAPISupport} instance created using the
+     * helidonConfig settings
      */
-    public static OpenAPISupport create(final Config config) {
-        return builder().config(config).build();
+    public static OpenAPISupport create(Config config) {
+        return builderSE().config(config).build();
+    }
+
+    /**
+     * Returns an OpenAPISupport.Builder for Helidon SE environments.
+     *
+     * @return Helidon SE {@code OpenAPISupport.Builder}
+     */
+    static SEOpenAPISupportBuilder builderSE() {
+        return new SEOpenAPISupportBuilder();
     }
 
     /**
      * Fluent API builder for {@link OpenAPISupport}.
      * <p>
-     * The builder mostly delegates to an instance of {@link OpenAPIConfigImpl.Builder}
-     * which in turn prepares a smallrye {@link OpenApiConfig} which is what the
-     * smallrye implementation uses to control its behavior.
-     * <p>
-     * If the app invokes both the {@link #config} method and other methods for
-     * setting individual attributes, the latest builder method invoked "wins" in
-     * case of conflicts.
+     * This abstract implementation is extended once for use by developers from
+     * Helidon SE apps and once for use from the Helidon MP-provided OpenAPI
+     * service. This lets us constrain what use cases are possible from each
+     * (for example, no anno processing from SE).
+     *
+     * @param <B> concrete subclass of OpenAPISupport.Builder
      */
-    public static final class Builder implements io.helidon.common.Builder<OpenAPISupport> {
+    public abstract static class Builder<B extends Builder<B>> implements io.helidon.common.Builder<OpenAPISupport> {
 
-        private static final String CONFIG_PREFIX = "openapi";
+        /**
+         * Config key to select the openapi node from Helidon config.
+         */
+        public static final String CONFIG_KEY = "openapi";
 
-        private final OpenAPIConfigImpl.Builder apiConfigBuilder = OpenAPIConfigImpl.builder();
+        private final Class<B> builderClass;
 
         private Optional<String> webContext = Optional.empty();
         private Optional<String> staticFilePath = Optional.empty();
-        private boolean isAnnotationProcessingEnabled = false;
+        private CrossOriginConfig crossOriginConfig = null;
 
-        private Builder() {
+        protected Builder(Class<B> builderClass) {
+            this.builderClass = builderClass;
         }
 
-        @Override
-        public OpenAPISupport build() {
-            return new OpenAPISupport(this);
+        protected B me() {
+            return builderClass.cast(this);
         }
 
         /**
          * Set various builder attributes from the specified {@code Config} object.
          * <p>
-         * The {@code Config} object can specify {@value #CONFIG_PREFIX}.web-context
-         * and {@value #CONFIG_PREFIX}.static-file in addition to settings
+         * The {@code Config} object can specify web-context and static-file in addition to settings
          * supported by {@link OpenAPIConfigImpl.Builder}.
          *
-         * @param config the {@code Config} object possibly containing settings
+         * @param config the openapi {@code Config} object possibly containing settings
+         * @exception NullPointerException if the provided {@code Config} is null
          * @return updated builder instance
          */
-        public Builder config(Config config) {
-            config.get(CONFIG_PREFIX + ".web-context").asString().ifPresent(this::webContext);
-            config.get(CONFIG_PREFIX + ".static-file").asString().ifPresent(this::staticFile);
+        public B config(Config config) {
+            config.get("web-context")
+                    .asString()
+                    .ifPresent(this::webContext);
+            config.get("static-file")
+                    .asString()
+                    .ifPresent(this::staticFile);
+            config.get(CORS_CONFIG_KEY)
+                    .as(CrossOriginConfig::create)
+                    .ifPresent(this::crossOriginConfig);
+            return me();
+        }
 
-            apiConfigBuilder.config(config);
+        /**
+         * Returns the web context (path) at which the OpenAPI endpoint should
+         * be exposed, either the most recent explicitly-set value via
+         * {@link #webContext(java.lang.String)} or the default
+         * {@value #DEFAULT_WEB_CONTEXT}.
+         *
+         * @return path the web context path for the OpenAPI endpoint
+         */
+        String webContext() {
+            String webContextPath = webContext.orElse(DEFAULT_WEB_CONTEXT);
+            if (webContext.isPresent()) {
+                LOGGER.log(Level.FINE, "OpenAPI path set to {0}", webContextPath);
+            } else {
+                LOGGER.log(Level.FINE, "OpenAPI path defaulting to {0}", webContextPath);
+            }
+            return webContextPath;
+        }
 
-            return this;
+        /**
+         * Returns the path to a static OpenAPI document file (if any exists),
+         * either as explicitly set using {@link #staticFile(java.lang.String) }
+         * or one of the default files.
+         *
+         * @return the OpenAPI static file instance for the static file if such
+         * a file exists, null otherwise
+         */
+        OpenApiStaticFile staticFile() {
+            return staticFilePath.isPresent() ? getExplicitStaticFile() : getDefaultStaticFile();
+        }
+
+        /**
+         * Returns the smallrye OpenApiConfig instance describing the set-up
+         * that will govern the smallrye OpenAPI behavior.
+         *
+         * @return {@code OpenApiConfig} conveying how OpenAPI should behave
+         */
+        public abstract OpenApiConfig openAPIConfig();
+
+        /**
+         * Makes sure the set-up for OpenAPI is consistent, internally and with
+         * the current Helidon runtime environment (SE or MP).
+         *
+         * @throws IllegalStateException if validation fails
+         */
+        public void validate() throws IllegalStateException {
         }
 
         /**
          * Path under which to register OpenAPI endpoint on the web server.
          *
-         * @param path webContext to use, defaults to {@value DEFAULT_WEB_CONTEXT}
+         * @param path webContext to use, defaults to
+         * {@value DEFAULT_WEB_CONTEXT}
          * @return updated builder instance
          */
-        public Builder webContext(String path) {
+        public B webContext(String path) {
+            if (!path.startsWith("/")) {
+                path = "/" + path;
+            }
             this.webContext = Optional.of(path);
-            return this;
+            return me();
         }
 
         /**
          * Sets the location of the static OpenAPI document file.
          *
-         * @param path location of the static OpenAPI document file
+         * @param path non-null location of the static OpenAPI document file
          * @return updated builder instance
          */
-        public Builder staticFile(String path) {
+        public B staticFile(String path) {
             Objects.requireNonNull(path, "path to static file must be non-null");
             staticFilePath = Optional.of(path);
-            return this;
+            return me();
         }
 
         /**
-         * Sets the app-provided model reader class.
+         * Set the CORS config from the specified {@code CrossOriginConfig} object.
          *
-         * @param className name of the model reader class
+         * @param crossOriginConfig {@code CrossOriginConfig} containing CORS set-up
          * @return updated builder instance
          */
-        public Builder modelReader(String className) {
-            Objects.requireNonNull(className, "modelReader class name must be non-null");
-            apiConfigBuilder.modelReader(className);
-            return this;
+        public B crossOriginConfig(CrossOriginConfig crossOriginConfig) {
+            Objects.requireNonNull(crossOriginConfig, "CrossOriginConfig must be non-null");
+            this.crossOriginConfig = crossOriginConfig;
+            return me();
         }
 
-        /**
-         * Set the app-provided OpenAPI model filter class.
-         *
-         * @param className name of the filter class
-         * @return updated builder instance
-         */
-        public Builder filter(String className) {
-            Objects.requireNonNull(className, "filter class name must be non-null");
-            apiConfigBuilder.filter(className);
-            return this;
+        protected Supplier<List<? extends IndexView>> indexViewsSupplier() {
+            // Only in MP can we have possibly multiple index views, one per app, from scanning classes (or the Jandex index).
+            return () -> Collections.emptyList();
         }
 
-        /**
-         * Sets the servers which offer the endpoints in the OpenAPI document.
-         *
-         * @param serverList comma-separated list of servers
-         * @return updated builder instance
-         */
-        public Builder servers(String serverList) {
-            Objects.requireNonNull(serverList, "serverList must be non-null");
-            apiConfigBuilder.servers(serverList);
-            return this;
+        private OpenApiStaticFile getExplicitStaticFile() {
+            Path path = Paths.get(staticFilePath.get());
+            final String specifiedFileType = typeFromPath(path);
+            final OpenAPIMediaType specifiedMediaType = OpenAPIMediaType.byFileType(specifiedFileType);
+
+            if (specifiedMediaType == null) {
+                throw new IllegalArgumentException("OpenAPI file path "
+                        + path.toAbsolutePath().toString()
+                        + " is not one of recognized types: "
+                        + OpenAPIMediaType.recognizedFileTypes());
+            }
+            final InputStream is;
+            try {
+                is = new BufferedInputStream(Files.newInputStream(path));
+            } catch (IOException ex) {
+                throw new IllegalArgumentException("OpenAPI file "
+                        + path.toAbsolutePath().toString()
+                        + " was specified but was not found", ex);
+            }
+
+            try {
+                LOGGER.log(Level.FINE,
+                        () -> String.format(
+                                OPENAPI_EXPLICIT_STATIC_FILE_LOG_MESSAGE_FORMAT,
+                                path.toAbsolutePath().toString()));
+                return new OpenApiStaticFile(is, specifiedMediaType.format());
+            } catch (Exception ex) {
+                try {
+                    is.close();
+                } catch (IOException ioex) {
+                    ex.addSuppressed(ioex);
+                }
+                throw ex;
+            }
         }
 
-        /**
-         * Adds an operation server for a given operation ID.
-         *
-         * @param operationID operation ID to which the server corresponds
-         * @param operationServer name of the server to add for this operation
-         * @return updated builder instance
-         */
-        public Builder addOperationServer(String operationID, String operationServer) {
-            Objects.requireNonNull(operationID, "operationID must be non-null");
-            Objects.requireNonNull(operationServer, "operationServer must be non-null");
-            apiConfigBuilder.addOperationServer(operationID, operationServer);
-            return this;
-        }
-
-        /**
-         * Adds a path server for a given path.
-         *
-         * @param path path to which the server corresponds
-         * @param pathServer name of the server to add for this path
-         * @return updated builder instance
-         */
-        public Builder addPathServer(String path, String pathServer) {
-            Objects.requireNonNull(path, "path must be non-null");
-            Objects.requireNonNull(pathServer, "pathServer must be non-null");
-            apiConfigBuilder.addPathServer(path, pathServer);
-            return this;
-        }
-
-        /**
-         * Sets whether annotation processing for OpenAPI annotations should
-         * be enabled.
-         *
-         * @param isEnabled whether annotation processing should be turned on
-         * @return updated builder instance
-         */
-        public Builder enableAnnotationProcessing(boolean isEnabled) {
-            isAnnotationProcessingEnabled = isEnabled;
-            return this;
+        private OpenApiStaticFile getDefaultStaticFile() {
+            final List<String> candidatePaths = LOGGER.isLoggable(Level.FINER) ? new ArrayList<>() : null;
+            for (OpenAPIMediaType candidate : OpenAPIMediaType.values()) {
+                for (String type : candidate.matchingTypes()) {
+                    String candidatePath = DEFAULT_STATIC_FILE_PATH_PREFIX + type;
+                    InputStream is = null;
+                    try {
+                        is = getContextClassLoader().getResourceAsStream(candidatePath);
+                        if (is != null) {
+                            Path path = Paths.get(candidatePath);
+                            LOGGER.log(Level.FINE, () -> String.format(
+                                    OPENAPI_DEFAULTED_STATIC_FILE_LOG_MESSAGE_FORMAT,
+                                    path.toAbsolutePath().toString()));
+                            return new OpenApiStaticFile(is, candidate.format());
+                        }
+                        if (candidatePaths != null) {
+                            candidatePaths.add(candidatePath);
+                        }
+                    } catch (Exception ex) {
+                        if (is != null) {
+                            try {
+                                is.close();
+                            } catch (IOException ioex) {
+                                ex.addSuppressed(ioex);
+                            }
+                        }
+                        throw ex;
+                    }
+                }
+            }
+            if (candidatePaths != null) {
+                LOGGER.log(Level.FINER,
+                        candidatePaths.stream()
+                                .collect(Collectors.joining(
+                                        "No default static OpenAPI description file found; checked [",
+                                        ",",
+                                        "]")));
+            }
+            return null;
         }
     }
 }

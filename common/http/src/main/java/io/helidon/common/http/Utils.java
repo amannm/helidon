@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2020 Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -81,6 +81,19 @@ public final class Utils {
     }
 
     /**
+     * Unwrap from double-quotes - if exists.
+     *
+     * @param str string to unwrap.
+     * @return unwrapped string.
+     */
+    public static String unwrap(String str) {
+        if (str.length() >= 2 && '"' == str.charAt(0) && '"' == str.charAt(str.length() - 1)) {
+            return str.substring(1, str.length() - 1);
+        }
+        return str;
+    }
+
+    /**
      * Appends the content of the given byte buffer into the given output stream.
      *
      * @param out        the stream where to append the byte buffer
@@ -97,15 +110,22 @@ public final class Utils {
         }
     }
 
-    static byte[] toByteArray(ByteBuffer byteBuffer) {
+    /**
+     * Convert the given byte buffer to a byte array.
+     * @param byteBuffer byte buffer
+     * @return byte array
+     */
+    public static byte[] toByteArray(ByteBuffer byteBuffer) {
         byte[] buff = new byte[byteBuffer.remaining()];
+        return toByteArray(byteBuffer, buff, 0);
+    }
 
+    static byte[] toByteArray(ByteBuffer byteBuffer, byte[] buff, int destPos) {
         if (byteBuffer.hasArray()) {
-            System.arraycopy(byteBuffer.array(), byteBuffer.arrayOffset() + byteBuffer.position(), buff, 0, buff.length);
+            System.arraycopy(byteBuffer.array(), byteBuffer.arrayOffset() + byteBuffer.position(), buff, destPos, buff.length);
         } else {
-            byteBuffer.get(buff);
+            byteBuffer.get(buff, destPos, byteBuffer.remaining());
         }
-
         return buff;
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2021 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,51 +19,47 @@ package io.helidon.webserver;
 import java.net.InetAddress;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 import javax.net.ssl.SSLContext;
 
+import io.helidon.common.context.Context;
+
 import io.opentracing.Tracer;
-import io.opentracing.util.GlobalTracer;
 
 /**
  * Basic implementation of the {@link ServerConfiguration}.
  */
 class ServerBasicConfig implements ServerConfiguration {
-
-    static final ServerConfiguration DEFAULT_CONFIGURATION = ServerConfiguration.builder().build();
-
     private final SocketConfiguration socketConfig;
     private final int workers;
     private final Tracer tracer;
     private final Map<String, SocketConfiguration> socketConfigs;
     private final ExperimentalConfiguration experimental;
+    private final Optional<Transport> transport;
+    private final Context context;
+    private final boolean printFeatureDetails;
 
     /**
      * Creates new instance.
      *
-     * @param socketConfig  a default socket configuration values
-     * @param workers       a count of threads in a pool used to tryProcess HTTP requests
-     * @param tracer        an {@code opentracing.io} tracer
-     * @param socketConfigs socket configurations of additional ports to listen on
+     * @param builder configuration builder
      */
-    ServerBasicConfig(SocketConfiguration socketConfig,
-                      int workers,
-                      Tracer tracer,
-                      Map<String, SocketConfiguration> socketConfigs,
-                      ExperimentalConfiguration experimental) {
-        this.socketConfig = socketConfig == null ? new SocketConfig() : socketConfig;
-        if (workers <= 0) {
-            workers = Runtime.getRuntime().availableProcessors() * 2;
-        }
-        this.workers = workers;
-        this.tracer = tracer == null ? GlobalTracer.get() : tracer;
-        HashMap<String, SocketConfiguration> map = new HashMap<>(socketConfigs);
-        map.put(ServerConfiguration.DEFAULT_SOCKET_NAME, this.socketConfig);
+    ServerBasicConfig(ServerConfiguration.Builder builder) {
+        this.socketConfig = builder.defaultSocketBuilder().build();
+        this.workers = builder.workers();
+        this.tracer = builder.tracer();
+        this.experimental = builder.experimental();
+        this.transport = builder.transport();
+        this.context = builder.context();
+        this.printFeatureDetails = builder.printFeatureDetails();
+
+        HashMap<String, SocketConfiguration> map = new HashMap<>(builder.sockets());
+        map.put(WebServer.DEFAULT_SOCKET_NAME, this.socketConfig);
         this.socketConfigs = Collections.unmodifiableMap(map);
-        this.experimental = experimental != null ? experimental
-                : new ExperimentalConfiguration.Builder().build();
     }
 
     @Override
@@ -74,6 +70,11 @@ class ServerBasicConfig implements ServerConfiguration {
     @Override
     public Set<String> enabledSslProtocols() {
         return socketConfig.enabledSslProtocols();
+    }
+
+    @Override
+    public ClientAuthentication clientAuth() {
+        return socketConfig.clientAuth();
     }
 
     @Override
@@ -107,6 +108,31 @@ class ServerBasicConfig implements ServerConfiguration {
     }
 
     @Override
+    public int maxHeaderSize() {
+        return socketConfig.maxHeaderSize();
+    }
+
+    @Override
+    public int maxInitialLineLength() {
+        return socketConfig.maxInitialLineLength();
+    }
+
+    @Override
+    public int maxChunkSize() {
+        return socketConfig.maxChunkSize();
+    }
+
+    @Override
+    public boolean validateHeaders() {
+        return socketConfig.validateHeaders();
+    }
+
+    @Override
+    public int initialBufferSize() {
+        return socketConfig.initialBufferSize();
+    }
+
+    @Override
     public Tracer tracer() {
         return tracer;
     }
@@ -121,6 +147,26 @@ class ServerBasicConfig implements ServerConfiguration {
         return experimental;
     }
 
+    @Override
+    public Optional<Transport> transport() {
+        return transport;
+    }
+
+    @Override
+    public Context context() {
+        return context;
+    }
+
+    @Override
+    public boolean printFeatureDetails() {
+        return printFeatureDetails;
+    }
+
+    @Override
+    public boolean enableCompression() {
+        return socketConfig.enableCompression();
+    }
+
     static class SocketConfig implements SocketConfiguration {
 
         private final int port;
@@ -130,38 +176,46 @@ class ServerBasicConfig implements ServerConfiguration {
         private final int receiveBufferSize;
         private final SSLContext sslContext;
         private final Set<String> enabledSslProtocols;
+        private final String name;
+        private final boolean enabled;
+        private final ClientAuthentication clientAuth;
+        private final int maxHeaderSize;
+        private final int maxInitialLineLength;
+        private final int maxChunkSize;
+        private final boolean validateHeaders;
+        private final int initialBufferSize;
+        private final boolean enableCompression;
+        private final long maxPayloadSize;
 
         /**
          * Creates new instance.
-         *
-         * @param port              a server port - ff port is {@code 0} or less then any available ephemeral port will be used
-         * @param bindAddress       an address to bind the server or {@code null} for all local addresses
-         * @param sslContext        the ssl context to associate with this socket configuration
-         * @param backlog           a maximum length of the queue of incoming connections
-         * @param timeoutMillis     a socket timeout in milliseconds or {@code 0} for infinite
-         * @param receiveBufferSize proposed TCP receive window size in bytes
          */
-        SocketConfig(int port,
-                     InetAddress bindAddress,
-                     SSLContext sslContext,
-                     Set<String> sslProtocols,
-                     int backlog,
-                     int timeoutMillis,
-                     int receiveBufferSize) {
-            this.port = port <= 0 ? 0 : port;
-            this.bindAddress = bindAddress;
-            this.backlog = backlog <= 0 ? DEFAULT_BACKLOG_SIZE : backlog;
-            this.timeoutMillis = timeoutMillis <= 0 ? 0 : timeoutMillis;
-            this.receiveBufferSize = receiveBufferSize <= 0 ? 0 : receiveBufferSize;
-            this.sslContext = sslContext;
-            this.enabledSslProtocols = sslProtocols;
-        }
+        SocketConfig(SocketConfiguration.Builder builder) {
+            this.name = builder.name();
+            this.enabled = builder.enabled();
+            this.port = Math.max(builder.port(), 0);
+            this.bindAddress = builder.bindAddress().orElse(null);
+            this.backlog = builder.backlog() < 0 ? DEFAULT_BACKLOG_SIZE : builder.backlog();
+            this.timeoutMillis = Math.max(builder.timeoutMillis(), 0);
+            this.receiveBufferSize = Math.max(builder.receiveBufferSize(), 0);
+            this.maxHeaderSize = builder.maxHeaderSize();
+            this.maxInitialLineLength = builder.maxInitialLineLength();
+            this.maxChunkSize = builder.maxChunkSize();
+            this.validateHeaders = builder.validateHeaders();
+            this.initialBufferSize = builder.initialBufferSize();
+            this.enableCompression = builder.enableCompression();
+            this.maxPayloadSize = builder.maxPayloadSize();
 
-        /**
-         * Creates default values instance.
-         */
-        SocketConfig() {
-            this(0, null, null, null, 0, 0, 0);
+            WebServerTls webServerTls = builder.tlsConfig();
+            if (webServerTls.enabled()) {
+                this.sslContext = webServerTls.sslContext();
+                this.enabledSslProtocols = new HashSet<>(webServerTls.enabledTlsProtocols());
+                this.clientAuth = webServerTls.clientAuth();
+            } else {
+                this.sslContext = null;
+                this.enabledSslProtocols = Set.of();
+                this.clientAuth = ClientAuthentication.NONE;
+            }
         }
 
         @Override
@@ -197,6 +251,56 @@ class ServerBasicConfig implements ServerConfiguration {
         @Override
         public Set<String> enabledSslProtocols() {
             return enabledSslProtocols;
+        }
+
+        @Override
+        public ClientAuthentication clientAuth() {
+            return clientAuth;
+        }
+
+        @Override
+        public String name() {
+            return name;
+        }
+
+        @Override
+        public boolean enabled() {
+            return enabled;
+        }
+
+        @Override
+        public int maxHeaderSize() {
+            return maxHeaderSize;
+        }
+
+        @Override
+        public int maxInitialLineLength() {
+            return maxInitialLineLength;
+        }
+
+        @Override
+        public int maxChunkSize() {
+            return maxChunkSize;
+        }
+
+        @Override
+        public boolean validateHeaders() {
+            return validateHeaders;
+        }
+
+        @Override
+        public int initialBufferSize() {
+            return initialBufferSize;
+        }
+
+        @Override
+        public boolean enableCompression() {
+            return enableCompression;
+        }
+
+        @Override
+        public long maxPayloadSize() {
+            return maxPayloadSize;
         }
     }
 }

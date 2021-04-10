@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,9 +17,8 @@
 /**
  * Common reactive library for Helidon projects.
  *
- * @see io.helidon.common.reactive.Flow
- * @see io.helidon.common.reactive.ReactiveStreamsAdapter
- * @see io.helidon.common.reactive.OutputStreamPublisher
- * @see io.helidon.common.reactive.SubmissionPublisher
+ * @see java.util.concurrent.Flow
+ * @see io.helidon.common.reactive.Multi
+ * @see io.helidon.common.reactive.IoMulti
  */
 package io.helidon.common.reactive;

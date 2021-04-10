@@ -1,34 +1,12 @@
-
 # Helidon Quickstart SE Example
 
 This project implements a simple Hello World REST service using Helidon SE.
 
-## Prerequisites
+## Build and run
 
-1. Maven 3.5 or newer
-2. Java SE 8 or newer
-3. Docker 17 or newer to build and run docker images
-4. Kubernetes minikube v0.24 or newer to deploy to Kubernetes (or access to a K8s 1.7.4 or newer cluster)
-5. Kubectl 1.7.4 or newer to deploy to Kubernetes
-
-Verify prerequisites
-```
-java -version
-mvn --version
-docker --version
-minikube version
-kubectl version --short
-```
-
-## Build
-
-```
+With JDK11+
+```bash
 mvn package
-```
-
-## Start the application
-
-```
 java -jar target/helidon-quickstart-se.jar
 ```
 
@@ -89,7 +67,7 @@ kubectl create -f app.yaml   # Deply application
 kubectl get service helidon-quickstart-se  # Get service info
 ```
 
-## Native image with GraalVM
+## Build a native image with GraalVM
 
 GraalVM allows you to compile your programs ahead-of-time into a native
  executable. See https://www.graalvm.org/docs/reference-manual/aot-compilation/
@@ -101,8 +79,8 @@ You can build a native executable in 2 different ways:
 
 ### Local build
 
-Download Graal VM at https://github.com/oracle/graal/releases, the version
- currently supported for Helidon is `1.0.0-rc13`.
+Download Graal VM at https://www.graalvm.org/downloads. We recommend
+version `20.1.0` or later.
 
 ```
 # Setup the environment
@@ -114,7 +92,7 @@ mvn package -Pnative-image
 You can also put the Graal VM `bin` directory in your PATH, or pass
  `-DgraalVMHome=/path` to the Maven command.
 
-See https://github.com/oracle/helidon-build-tools/tree/master/helidon-maven-plugin
+See https://github.com/oracle/helidon-build-tools/tree/master/helidon-maven-plugin#goal-native-image
  for more information.
 
 Start the application:
@@ -135,4 +113,53 @@ Start the application:
 
 ```
 docker run --rm -p 8080:8080 helidon-quickstart-se-native:latest
+```
+
+## Build a Java Runtime Image using jlink
+
+You can build a custom Java Runtime Image (JRI) containing the application jars and the JDK modules 
+on which they depend. This image also:
+
+* Enables Class Data Sharing by default to reduce startup time. 
+* Contains a customized `start` script to simplify CDS usage and support debug and test modes. 
+ 
+You can build a custom JRI in two different ways:
+* Local
+* Using Docker
+
+
+### Local build
+
+```
+# build the JRI
+mvn package -Pjlink-image
+```
+
+See https://github.com/oracle/helidon-build-tools/tree/master/helidon-maven-plugin#goal-jlink-image
+ for more information.
+
+Start the application:
+
+```
+./target/helidon-quickstart-se-jri/bin/start
+```
+
+### Multi-stage Docker build
+
+Build the JRI as a Docker Image
+
+```
+docker build -t helidon-quickstart-se-jri -f Dockerfile.jlink .
+```
+
+Start the application:
+
+```
+docker run --rm -p 8080:8080 helidon-quickstart-se-jri:latest
+```
+
+See the start script help:
+
+```
+docker run --rm helidon-quickstart-se-jri:latest --help
 ```

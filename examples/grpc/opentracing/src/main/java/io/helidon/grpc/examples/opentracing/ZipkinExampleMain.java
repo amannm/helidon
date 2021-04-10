@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,16 +16,15 @@
 
 package io.helidon.grpc.examples.opentracing;
 
-import java.util.logging.LogManager;
-
+import io.helidon.common.LogConfig;
 import io.helidon.config.Config;
 import io.helidon.grpc.examples.common.GreetService;
 import io.helidon.grpc.examples.common.StringService;
 import io.helidon.grpc.server.GrpcRouting;
 import io.helidon.grpc.server.GrpcServer;
 import io.helidon.grpc.server.GrpcServerConfiguration;
+import io.helidon.grpc.server.GrpcTracingConfig;
 import io.helidon.grpc.server.ServerRequestAttribute;
-import io.helidon.grpc.server.TracingConfiguration;
 import io.helidon.tracing.TracerBuilder;
 
 import io.opentracing.Tracer;
@@ -49,12 +48,11 @@ public class ZipkinExampleMain {
         Config config = Config.create();
 
         // load logging configuration
-        LogManager.getLogManager().readConfiguration(
-                ZipkinExampleMain.class.getResourceAsStream("/logging.properties"));
+        LogConfig.configureRuntime();
 
         Tracer tracer = TracerBuilder.create(config.get("tracing")).build();
 
-        TracingConfiguration tracingConfig = new TracingConfiguration.Builder()
+        GrpcTracingConfig tracingConfig = GrpcTracingConfig.builder()
                 .withStreaming()
                 .withVerbosity()
                 .withTracedAttributes(ServerRequestAttribute.CALL_ATTRIBUTES,

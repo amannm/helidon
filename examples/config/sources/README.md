@@ -1,4 +1,3 @@
-
 # Helidon Config Sources Example
 
 This example shows how to load configuration from multiple 
@@ -16,14 +15,9 @@ applies a filter to modify config values whose keys match a certain pattern.
 combines multiple config sources into a single configuration instance (and adds a
 filter.
 
-## Build
+## Build and run
 
-```
+```bash
 mvn package
-```
-
-## Run
-
-```
-mvn exec:java
+java -jar target/helidon-examples-config-sources.jar
 ```

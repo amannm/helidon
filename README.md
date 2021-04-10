@@ -1,5 +1,5 @@
 <p align="center">
-    <img src="./etc/images/Primary_logo_blue.png" height="180">
+    <img src="./etc/images/Primary_logo_blue.png">
 </p>
 <p align="center">
     <a href="https://github.com/oracle/helidon/tags">
@@ -7,9 +7,6 @@
     </a>
     <a href="https://github.com/oracle/helidon/issues">
         <img src="https://img.shields.io/github/issues/oracle/helidon.svg" alt="latest version">
-    </a>
-    <a href="https://app.wercker.com/project/byKey/de00e8ec6178ba9a2db8ee863d5c568a">
-        <img src="https://app.wercker.com/status/de00e8ec6178ba9a2db8ee863d5c568a/s/master" alt="build status">
     </a>
     <a href="https://twitter.com/intent/follow?screen_name=helidon_project">
         <img src="https://img.shields.io/twitter/follow/helidon_project.svg?style=social&logo=twitter" alt="follow on Twitter">
@@ -21,10 +18,14 @@
 Project Helidon is a set of Java Libraries for writing microservices.
 Helidon supports two programming models:
 
-* Helidon MP: [MicroProfile](https://microprofile.io/) 1.2
+* Helidon MP: [MicroProfile](https://microprofile.io/) 3.3
 * Helidon SE: a small, functional style API
 
 In either case your application is just a Java SE program.
+
+## License
+
+Helidon is available under Apache License 2.0.
 
 ## Documentation
 
@@ -39,10 +40,27 @@ See Getting Started at <https://helidon.io>.
 There are no Helidon downloads. Just use our Maven releases (GroupID `io.helidon`).
 See Getting Started at <https://helidon.io>. 
 
+## Helidon CLI
+
+MacOS:
+```bash
+curl -O https://helidon.io/cli/latest/darwin/helidon
+chmod +x ./helidon
+sudo mv ./helidon /usr/local/bin/
+```
+
+Linux:
+```bash
+curl -O https://helidon.io/cli/latest/linux/helidon
+chmod +x ./helidon
+sudo mv ./helidon /usr/local/bin/
+```
+
+See this [document](HELIDON-CLI.md) for more info.
+
 ## Build
 
-You can build Helidon using JDK 8 or above. Building with 9+ results in jar
-files that are valid Java 9 modules containing Java 8 bytecodes.
+You need JDK 11+ to build Helidon.
 
 You also need Maven. We recommend 3.5 or newer.
 
@@ -86,7 +104,8 @@ but a couple are handy to use on your desktop to verify your changes.
 ## Get Help
 
 * See the [Helidon FAQ](https://github.com/oracle/helidon/wiki/FAQ)
-* Join us on Slack: [#helidon-users](https://join.slack.com/t/helidon/shared_invite/enQtNDM1NjU3MjkyNDg2LTFkZTM4NmI3OWUyNjUxYWQ5Njc0NGNiMzY3MTZiZmMwNzAxYmI4YzUzOWNkNzNlZTEwNDRkZGU4YzMzZjhkNTE)
+* Ask questions on Stack Overflow using the [helidon tag](https://stackoverflow.com/tags/helidon)
+* Join us on Slack: [#helidon-users](http://slack.helidon.io)
 
 ## Get Involved
 
@@ -96,4 +115,4 @@ but a couple are handy to use on your desktop to verify your changes.
 ## Stay Informed
 
 * Twitter: [@helidon_project](https://twitter.com/helidon_project)
-* Blog: [OracleDevs on Medium](https://medium.com/oracledevs/search?q=helidon)
+* Blog: [Helidon on Medium](https://medium.com/helidon)

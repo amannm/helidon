@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -51,7 +51,8 @@ class TracerBuilderTest {
                 .addTracerTag("key2", 49)
                 .addTracerTag("key3", true)
                 .enabled(true)
-                .buildAndRegister();
+                .registerGlobal(true)
+                .build();
 
         assertThat(tracer, notNullValue());
         assertThat(tracer, instanceOf(NoopTracer.class));
@@ -60,7 +61,7 @@ class TracerBuilderTest {
     @Test
     void testNoOpTracerBuilderFromConfig() {
         Tracer tracer = TracerBuilder.create(Config.create())
-                .buildAndRegister();
+                .build();
 
         assertThat(tracer, notNullValue());
         assertThat(tracer, instanceOf(NoopTracer.class));
@@ -93,10 +94,11 @@ class TracerBuilderTest {
                 .addTracerTag("key2", 49)
                 .addTracerTag("key3", true)
                 .enabled(true)
+                .registerGlobal(true)
                 // make sure we do not lose the builder type
                 .first("first")
                 .second("second")
-                .buildAndRegister();
+                .build();
 
         assertThat(tracer, notNullValue());
         assertThat(tracer, instanceOf(NoopTracer.class));
@@ -119,6 +121,7 @@ class TracerBuilderTest {
         private String path;
         private Config config;
         private boolean enabled;
+        private boolean global;
         private Tracer tracer;
 
         @Override
@@ -178,6 +181,12 @@ class TracerBuilderTest {
         @Override
         public MyTracerBuilder enabled(boolean enabled) {
             this.enabled = enabled;
+            return this;
+        }
+
+        @Override
+        public MyTracerBuilder registerGlobal(boolean global) {
+            this.global = global;
             return this;
         }
 

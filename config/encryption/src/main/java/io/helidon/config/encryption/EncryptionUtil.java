@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018,2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2021 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
 import java.security.Key;
 import java.security.PrivateKey;
+import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.spec.KeySpec;
 import java.util.Base64;
@@ -29,15 +30,16 @@ import java.util.logging.Logger;
 
 import javax.crypto.Cipher;
 import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
 
-import io.helidon.common.OptionalHelper;
 import io.helidon.common.configurable.Resource;
 import io.helidon.common.pki.KeyConfig;
 import io.helidon.config.Config;
 import io.helidon.config.ConfigValue;
+import io.helidon.config.mp.MpConfig;
 
 /**
  * Encryption utilities for secrets protection.
@@ -47,12 +49,41 @@ public final class EncryptionUtil {
 
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
     private static final int SALT_LENGTH = 16;
+    private static final int NONCE_LENGTH = 12; //(Also called IV) Needs to be 12 when using GCM!
     private static final int SEED_LENGTH = 16;
     private static final int HASH_ITERATIONS = 10000;
-    private static final int KEY_LENGTH = 128;
+    private static final int KEY_LENGTH_LEGACY = 128;
+    private static final int KEY_LENGTH = 256;
+    private static final int AUTHENTICATION_TAG_LENGTH = 128;
 
     private EncryptionUtil() {
         throw new IllegalStateException("Utility class");
+    }
+
+    /**
+     * Decrypt using RSA with OAEP.
+     * Expects message encrypted with the public key.
+     *
+     * @param key             private key used to decrypt
+     * @param encryptedBase64 base64 encoded encrypted secret
+     * @return Secret value
+     * @throws ConfigEncryptionException If any problem with decryption occurs
+     */
+    public static String decryptRsa(PrivateKey key, String encryptedBase64) throws ConfigEncryptionException {
+        Objects.requireNonNull(key, "Key must be provided for decryption");
+        Objects.requireNonNull(encryptedBase64, "Encrypted bytes must be provided for decryption (base64 encoded)");
+
+        try {
+            Cipher cipher = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding");
+            cipher.init(Cipher.DECRYPT_MODE, key);
+            byte[] decrypted = cipher.doFinal(Base64.getDecoder().decode(encryptedBase64));
+            return new String(decrypted, StandardCharsets.UTF_8);
+        } catch (ConfigEncryptionException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new ConfigEncryptionException("Failed to decrypt value using RSA. Returning clear text value as is: "
+                                                        + encryptedBase64, e);
+        }
     }
 
     /**
@@ -64,7 +95,7 @@ public final class EncryptionUtil {
      * @return Secret value
      * @throws ConfigEncryptionException If any problem with decryption occurs
      */
-    public static String decryptRsa(Key key, String encryptedBase64) throws ConfigEncryptionException {
+    public static String decryptRsaLegacy(Key key, String encryptedBase64) throws ConfigEncryptionException {
         Objects.requireNonNull(key, "Key must be provided for decryption");
         Objects.requireNonNull(encryptedBase64, "Encrypted bytes must be provided for decryption (base64 encoded)");
 
@@ -82,19 +113,22 @@ public final class EncryptionUtil {
     }
 
     /**
-     * Encrypt secret using RSA (private or public key).
+     * Encrypt secret using RSA with OAEP.
      *
-     * @param key    private or public key to use to encrypt
-     * @param secret secret to encrypt
+     * @param key     public key used to encrypt
+     * @param secret  secret to encrypt
      * @return base64 encoded encrypted bytes
      * @throws ConfigEncryptionException If any problem with encryption occurs
      */
-    public static String encryptRsa(Key key, String secret) throws ConfigEncryptionException {
+    public static String encryptRsa(PublicKey key, String secret) throws ConfigEncryptionException {
         Objects.requireNonNull(key, "Key must be provided for encryption");
         Objects.requireNonNull(secret, "Secret message must be provided to be encrypted");
+        if (secret.getBytes(StandardCharsets.UTF_8).length > 190) {
+            throw new ConfigEncryptionException("Secret value is too large. Maximum of 190 bytes is allowed.");
+        }
 
         try {
-            Cipher cipher = Cipher.getInstance("RSA");
+            Cipher cipher = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding");
             cipher.init(Cipher.ENCRYPT_MODE, key);
             byte[] encrypted = cipher.doFinal(secret.getBytes(StandardCharsets.UTF_8));
             return Base64.getEncoder().encodeToString(encrypted);
@@ -104,7 +138,7 @@ public final class EncryptionUtil {
     }
 
     /**
-     * Encrypt using AES, salted and seeded.
+     * Encrypt using AES with GCM method, key is derived from password with random salt.
      *
      * @param masterPassword master password
      * @param secret         secret to encrypt
@@ -112,40 +146,50 @@ public final class EncryptionUtil {
      * @throws ConfigEncryptionException If any problem with encryption occurs
      */
     public static String encryptAes(char[] masterPassword, String secret) throws ConfigEncryptionException {
+        Objects.requireNonNull(secret, "Secret message must be provided to be encrypted");
+
+        return encryptAesBytes(masterPassword, secret.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Encrypt using AES with GCM method, key is derived from password with random salt.
+     *
+     * @param masterPassword master password
+     * @param secret         secret to encrypt
+     * @return Encrypted value base64 encoded
+     * @throws ConfigEncryptionException If any problem with encryption occurs
+     * @deprecated this method will be removed once a separate module for encryption is created
+     */
+    @Deprecated(since = "2.2.0")
+    public static String encryptAesBytes(char[] masterPassword, byte[] secret) throws ConfigEncryptionException {
         Objects.requireNonNull(masterPassword, "Password must be provided for encryption");
         Objects.requireNonNull(secret, "Secret message must be provided to be encrypted");
 
         byte[] salt = SECURE_RANDOM.generateSeed(SALT_LENGTH);
+        byte[] nonce = SECURE_RANDOM.generateSeed(NONCE_LENGTH);
 
-        Cipher cipher = cipher(masterPassword, salt, Cipher.ENCRYPT_MODE);
-
-        // get bytes to encrypt (seed + original message)
-        byte[] seed = SECURE_RANDOM.generateSeed(SEED_LENGTH);
-        byte[] secretBytes = secret.getBytes(StandardCharsets.UTF_8);
-        byte[] bytesToEncrypt = new byte[secretBytes.length + seed.length];
-        System.arraycopy(seed, 0, bytesToEncrypt, 0, seed.length);
-        System.arraycopy(secretBytes, 0, bytesToEncrypt, seed.length, secretBytes.length);
-
+        Cipher cipher = cipher(masterPassword, salt, nonce, Cipher.ENCRYPT_MODE);
         // encrypt
         byte[] encryptedMessageBytes;
         try {
-            encryptedMessageBytes = cipher.doFinal(bytesToEncrypt);
+            encryptedMessageBytes = cipher.doFinal(secret);
         } catch (Exception e) {
             throw new ConfigEncryptionException("Failed to encrypt", e);
         }
 
-        // get bytes to base64 (salt + encrypted message)
-        byte[] bytesToEncode = new byte[encryptedMessageBytes.length + salt.length];
+        // get bytes to base64 (salt + nonce + encrypted message)
+        byte[] bytesToEncode = new byte[encryptedMessageBytes.length + salt.length + nonce.length];
         System.arraycopy(salt, 0, bytesToEncode, 0, salt.length);
-        System.arraycopy(encryptedMessageBytes, 0, bytesToEncode, seed.length, encryptedMessageBytes.length);
+        System.arraycopy(nonce, 0, bytesToEncode, salt.length, nonce.length);
+        System.arraycopy(encryptedMessageBytes, 0, bytesToEncode, nonce.length + salt.length, encryptedMessageBytes.length);
 
         return Base64.getEncoder().encodeToString(bytesToEncode);
     }
 
-    private static Cipher cipher(char[] masterPassword, byte[] salt, int cipherMode) throws ConfigEncryptionException {
+    private static Cipher cipherLegacy(char[] masterPassword, byte[] salt, int cipherMode) throws ConfigEncryptionException {
         try {
             SecretKeyFactory secretKeyFactory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA1");
-            KeySpec keySpec = new PBEKeySpec(masterPassword, salt, HASH_ITERATIONS, KEY_LENGTH);
+            KeySpec keySpec = new PBEKeySpec(masterPassword, salt, HASH_ITERATIONS, KEY_LENGTH_LEGACY);
             SecretKeySpec spec = new SecretKeySpec(secretKeyFactory.generateSecret(keySpec).getEncoded(), "AES");
             Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
             cipher.init(cipherMode, spec, new IvParameterSpec(salt));
@@ -156,17 +200,30 @@ public final class EncryptionUtil {
         }
     }
 
+    private static Cipher cipher(char[] masterPassword, byte[] salt, byte[] nonce, int cipherMode)
+            throws ConfigEncryptionException {
+        try {
+            SecretKeyFactory secretKeyFactory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+            KeySpec keySpec = new PBEKeySpec(masterPassword, salt, HASH_ITERATIONS, KEY_LENGTH);
+            SecretKeySpec spec = new SecretKeySpec(secretKeyFactory.generateSecret(keySpec).getEncoded(), "AES");
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(cipherMode, spec, new GCMParameterSpec(AUTHENTICATION_TAG_LENGTH, nonce));
+
+            return cipher;
+        } catch (Exception e) {
+            throw new ConfigEncryptionException("Failed to prepare a cipher instance", e);
+        }
+    }
+
     /**
-     * Decrypt using AES.
-     * Will only decrypt messages encrypted with {@link #encryptAes(char[], String)} as the algorithm used is quite custom
-     * (number of bytes of seed, of salt and approach).
+     * Decrypt using legacy AES.
+     * Will only decrypt messages encrypted with previously used AES method.
      *
      * @param masterPassword  master password
      * @param encryptedBase64 encrypted secret, base64 encoded
      * @return Decrypted secret
-     * @throws ConfigEncryptionException if something bad happens during decryption (e.g. wrong password)
      */
-    static String decryptAes(char[] masterPassword, String encryptedBase64) throws ConfigEncryptionException {
+    public static String decryptAesLegacy(char[] masterPassword, String encryptedBase64) {
         Objects.requireNonNull(masterPassword, "Password must be provided for encryption");
         Objects.requireNonNull(encryptedBase64, "Encrypted bytes must be provided for decryption (base64 encoded)");
 
@@ -182,7 +239,7 @@ public final class EncryptionUtil {
             System.arraycopy(decodedBytes, SALT_LENGTH, encryptedBytes, 0, encryptedBytes.length);
 
             // get cipher
-            Cipher cipher = cipher(masterPassword, salt, Cipher.DECRYPT_MODE);
+            Cipher cipher = cipherLegacy(masterPassword, salt, Cipher.DECRYPT_MODE);
 
             // bytes with seed
             byte[] decryptedBytes;
@@ -193,12 +250,94 @@ public final class EncryptionUtil {
             return new String(originalBytes, StandardCharsets.UTF_8);
         } catch (Throwable e) {
             throw new ConfigEncryptionException("Failed to decrypt value using AES. Returning clear text value as is: "
-                                                    + encryptedBase64, e);
+                                                        + encryptedBase64, e);
         }
     }
 
+    /**
+     * Decrypt using AES.
+     * Will only decrypt messages encrypted with {@link #encryptAes(char[], String)} as the algorithm used is quite custom
+     * (number of bytes of seed, of salt and approach).
+     *
+     * @param masterPassword  master password
+     * @param encryptedBase64 encrypted secret, base64 encoded
+     * @return Decrypted secret
+     * @throws ConfigEncryptionException if something bad happens during decryption (e.g. wrong password)
+     */
+    public static String decryptAes(char[] masterPassword, String encryptedBase64) throws ConfigEncryptionException {
+        return new String(decryptAesBytes(masterPassword, encryptedBase64), StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Decrypt using AES.
+     * Will only decrypt messages encrypted with {@link #encryptAes(char[], String)} as the algorithm used is quite custom
+     * (number of bytes of seed, of salt and approach).
+     *
+     * @param masterPassword  master password
+     * @param encryptedBase64 encrypted secret, base64 encoded
+     * @return Decrypted secret
+     * @throws ConfigEncryptionException if something bad happens during decryption (e.g. wrong password)
+     * @deprecated This method will be moved to a new module
+     */
+    @Deprecated(since = "2.2.0")
+    public static byte[] decryptAesBytes(char[] masterPassword, String encryptedBase64) {
+        Objects.requireNonNull(masterPassword, "Password must be provided for encryption");
+        Objects.requireNonNull(encryptedBase64, "Encrypted bytes must be provided for decryption (base64 encoded)");
+
+        try {
+            // decode base64
+            byte[] decodedBytes = Base64.getDecoder().decode(encryptedBase64);
+
+            // extract salt and encrypted bytes
+            byte[] salt = new byte[SALT_LENGTH];
+            byte[] nonce = new byte[NONCE_LENGTH];
+            byte[] encryptedBytes = new byte[decodedBytes.length - SALT_LENGTH - NONCE_LENGTH];
+
+            System.arraycopy(decodedBytes, 0, salt, 0, SALT_LENGTH);
+            System.arraycopy(decodedBytes, SALT_LENGTH, nonce, 0, NONCE_LENGTH);
+            System.arraycopy(decodedBytes, SALT_LENGTH + NONCE_LENGTH, encryptedBytes, 0, encryptedBytes.length);
+
+            // get cipher
+            Cipher cipher = cipher(masterPassword, salt, nonce, Cipher.DECRYPT_MODE);
+
+            // bytes with seed
+            byte[] decryptedBytes;
+            decryptedBytes = cipher.doFinal(encryptedBytes);
+            byte[] originalBytes = new byte[decryptedBytes.length];
+            System.arraycopy(decryptedBytes, 0, originalBytes, 0, originalBytes.length);
+
+            return originalBytes;
+        } catch (Throwable e) {
+            throw new ConfigEncryptionException("Failed to decrypt value using AES. Returning clear text value as is: "
+                                                        + encryptedBase64, e);
+        }
+    }
+
+    static Optional<char[]> resolveMasterPassword(boolean requireEncryption, org.eclipse.microprofile.config.Config config) {
+        Optional<char[]> result = getEnv(ConfigProperties.MASTER_PASSWORD_ENV_VARIABLE)
+                .or(() -> {
+                    Optional<String> value = config.getOptionalValue(ConfigProperties.MASTER_PASSWORD_CONFIG_KEY, String.class);
+                    if (value.isPresent()) {
+                        if (requireEncryption) {
+                            LOGGER.warning(
+                                    "Master password is configured as clear text in configuration when encryption is required. "
+                                            + "This value will be ignored. System property or environment variable expected!!!");
+                            return Optional.empty();
+                        }
+                    }
+                    return value;
+                })
+                .map(String::toCharArray);
+
+        if (result.isEmpty()) {
+            LOGGER.fine("Securing properties using master password is not available, as master password is not configured");
+        }
+
+        return result;
+    }
+
     static Optional<char[]> resolveMasterPassword(boolean requireEncryption, Config config) {
-        Optional<char[]> result = OptionalHelper.from(getEnv(ConfigProperties.MASTER_PASSWORD_ENV_VARIABLE))
+        Optional<char[]> result = getEnv(ConfigProperties.MASTER_PASSWORD_ENV_VARIABLE)
                 .or(() -> {
                     ConfigValue<String> value = config.get(ConfigProperties.MASTER_PASSWORD_CONFIG_KEY).asString();
                     if (value.isPresent()) {
@@ -211,7 +350,6 @@ public final class EncryptionUtil {
                     }
                     return value.asOptional();
                 })
-                .asOptional()
                 .map(String::toCharArray);
 
         if (!result.isPresent()) {
@@ -219,6 +357,10 @@ public final class EncryptionUtil {
         }
 
         return result;
+    }
+
+    static Optional<PrivateKey> resolvePrivateKey(org.eclipse.microprofile.config.Config config){
+        return resolvePrivateKey(MpConfig.toHelidonConfig(config).get("security.config.rsa"));
     }
 
     static Optional<PrivateKey> resolvePrivateKey(Config config) {

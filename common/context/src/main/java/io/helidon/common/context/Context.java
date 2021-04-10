@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@
 package io.helidon.common.context;
 
 import java.util.Optional;
-import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
@@ -168,15 +167,29 @@ public interface Context {
      */
     class Builder implements io.helidon.common.Builder<Context> {
         private static final AtomicLong PARENT_CONTEXT_COUNTER = new AtomicLong(1);
+        // this will cycle through long values from 1 to Long.MAX_VALUE
+        private static final AtomicLong CHILD_CONTEXT_COUNTER = new AtomicLong(1);
         private Context parent;
         private String id;
+        private boolean notGlobal = true;
 
         @Override
         public Context build() {
-            if (null == id) {
+            if (id == null) {
                 id = generateId();
             }
+
+            if (notGlobal && (parent == null)) {
+                // only configure a parent for non-global context. Global context is the only one that has a null parent
+                parent = Contexts.globalContext();
+            }
+
             return new ListContext(this);
+        }
+
+        Builder global() {
+            notGlobal = false;
+            return this;
         }
 
         private String generateId() {
@@ -184,12 +197,13 @@ public interface Context {
                 return String.valueOf(PARENT_CONTEXT_COUNTER.getAndIncrement());
             }
             if (parent instanceof ListContext) {
-                return parent.id() + ":" + ((ListContext) parent).contextCounter().getAndIncrement();
+                return parent.id() + ":" + ((ListContext) parent).nextChildId();
             }
-            // we cannot depend on the parent, so let's use UUID
-            return parent.id() + ":" + UUID.randomUUID();
-        }
 
+            // we cannot depend on the parent, so let's use a simple counter (across all contexts)
+            long nextId = CHILD_CONTEXT_COUNTER.getAndUpdate(operand -> (operand == Long.MAX_VALUE) ? 1 : (operand + 1));
+            return parent.id() + ":" + nextId;
+        }
 
         /**
          * Parent of the new context.

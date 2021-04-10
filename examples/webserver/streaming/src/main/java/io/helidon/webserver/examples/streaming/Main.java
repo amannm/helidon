@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@
 package io.helidon.webserver.examples.streaming;
 
 import io.helidon.webserver.Routing;
-import io.helidon.webserver.ServerConfiguration;
 import io.helidon.webserver.WebServer;
 
 /**
@@ -27,7 +26,8 @@ public class Main {
 
     static final String LARGE_FILE_RESOURCE = "/large-file.bin";
 
-    private Main() {}
+    private Main() {
+    }
 
     /**
      * Creates new {@link Routing}.
@@ -46,10 +46,9 @@ public class Main {
      * @param args command line arguments.
      */
     public static void main(String[] args) {
-        ServerConfiguration config = ServerConfiguration.builder()
-                                                        .port(8080)
-                                                        .build();
-        WebServer server = WebServer.create(config, createRouting());
+        WebServer server = WebServer.builder(createRouting())
+                .port(8080)
+                .build();
 
         server.start().thenAccept(ws ->
             System.out.println("Steaming service is up at http://localhost:" + ws.port())

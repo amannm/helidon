@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2021 Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import java.util.logging.Level;
@@ -28,8 +28,9 @@ import java.util.logging.Logger;
 
 import io.helidon.common.http.DataChunk;
 import io.helidon.common.http.Http;
-import io.helidon.common.reactive.Flow;
+import io.helidon.common.reactive.Single;
 
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
@@ -41,6 +42,7 @@ import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpRequest;
+import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.util.concurrent.Future;
@@ -59,7 +61,6 @@ class BareResponseImpl implements BareResponse {
     // See HttpConversionUtil.ExtensionHeaderNames
     private static final String HTTP_2_HEADER_PREFIX = "x-http2";
     private static final SocketClosedException CLOSED = new SocketClosedException("Response channel is closed!");
-    private static final LastHttpContent LAST_HTTP_CONTENT = new DefaultLastHttpContent(Unpooled.EMPTY_BUFFER);
 
     private final boolean keepAlive;
     private final ChannelHandlerContext ctx;
@@ -68,42 +69,77 @@ class BareResponseImpl implements BareResponse {
     private final CompletableFuture<BareResponse> responseFuture;
     private final CompletableFuture<BareResponse> headersFuture;
     private final BooleanSupplier requestContentConsumed;
-    private final Thread thread;
     private final long requestId;
     private final HttpHeaders requestHeaders;
+    private final ChannelFuture channelClosedFuture;
+    private final GenericFutureListener<? extends Future<? super Void>> channelClosedListener;
 
-    private volatile Flow.Subscription subscription;
+    // Accessed by Subscriber method threads
+    private Flow.Subscription subscription;
+    private DataChunk firstChunk;
+    private CompletableFuture<?> prevRequestChunk;
+
+    // Accessed by writeStatusHeaders(status, headers) method
+    private volatile boolean lengthOptimization;
+    private volatile boolean isWebSocketUpgrade = false;
+    private volatile DefaultHttpResponse response;
 
     /**
      * @param ctx the channel handler context
      * @param request the request
      * @param requestContentConsumed whether the request content is consumed
-     * @param thread the outbound event loop thread which will be used to write the response
+     * @param prevRequestChunk Future that represents previous request completion for HTTP pipelining
      * @param requestId the correlation ID that is added to the log statements
      */
     BareResponseImpl(ChannelHandlerContext ctx,
                      HttpRequest request,
                      BooleanSupplier requestContentConsumed,
-                     Thread thread,
+                     CompletableFuture<?> prevRequestChunk,
                      long requestId) {
         this.requestContentConsumed = requestContentConsumed;
-        this.thread = thread;
         this.responseFuture = new CompletableFuture<>();
         this.headersFuture = new CompletableFuture<>();
-        this.responseFuture
-                .thenRun(() -> headersFuture.complete(this))
-                .exceptionally(thr -> {
-                    headersFuture.completeExceptionally(thr);
-                    return null;
-                });
         this.ctx = ctx;
         this.requestId = requestId;
-        ctx.channel()
-                .closeFuture()
-                // to make this work, when programmatically closing the channel, the responseFuture must be closed beforehand!
-                .addListener(channelFuture -> responseFuture.completeExceptionally(CLOSED));
         this.keepAlive = HttpUtil.isKeepAlive(request);
         this.requestHeaders = request.headers();
+        this.prevRequestChunk = prevRequestChunk;
+
+        // We need to keep this listener so we can remove it when this response completes. If we don't, we leak
+        // while the channel remains open since each response adds a new listener that references 'this'.
+        // Use fields to avoid capturing lambdas.
+
+        this.channelClosedListener = this::channelClosed;
+        this.channelClosedFuture = ctx.channel().closeFuture();
+
+        // to make this work, when programmatically closing the channel the responseFuture must be closed first!
+        channelClosedFuture.addListener(channelClosedListener);
+
+        responseFuture.whenComplete(this::responseComplete);
+    }
+
+    /**
+     * Steps required for the completion of this response.
+     *
+     * @param self this instance
+     * @param throwable a throwable indicating unsuccessful completion
+     */
+    private void responseComplete(BareResponse self, Throwable throwable) {
+        if (throwable == null) {
+            headersFuture.complete(this);
+        } else {
+            headersFuture.completeExceptionally(throwable);
+        }
+        channelClosedFuture.removeListener(channelClosedListener);
+    }
+
+    /**
+     * Called when a channel is closed programmatically.
+     *
+     * @param future a future
+     */
+    private void channelClosed(Future<? super Void> future) {
+        responseFuture.completeExceptionally(CLOSED);
     }
 
     @Override
@@ -113,7 +149,7 @@ class BareResponseImpl implements BareResponse {
             throw new IllegalStateException("Status and headers were already sent");
         }
 
-        DefaultHttpResponse response = new DefaultHttpResponse(HTTP_1_1, valueOf(status.code()));
+        response = new DefaultHttpResponse(HTTP_1_1, valueOf(status.code()));
         for (Map.Entry<String, List<String>> headerEntry : headers.entrySet()) {
             response.headers().add(headerEntry.getKey(), headerEntry.getValue());
         }
@@ -123,24 +159,47 @@ class BareResponseImpl implements BareResponse {
                 .filter(header -> header.startsWith(HTTP_2_HEADER_PREFIX))
                 .forEach(header -> response.headers().add(header, requestHeaders.get(header)));
 
-        if (keepAlive) {
-            if (status.code() != Http.Status.NO_CONTENT_204.code()) {
+        // Check if WebSocket upgrade
+        boolean isUpgrade = isWebSocketUpgrade(status, headers);
+        if (isUpgrade) {
+            isWebSocketUpgrade = true;
+        } else {
+            // Set chunked if length not set, may switch to length later
+            boolean lengthSet = HttpUtil.isContentLengthSet(response);
+            if (!lengthSet) {
+                lengthOptimization = status.code() == Http.Status.OK_200.code()
+                        && !HttpUtil.isTransferEncodingChunked(response);
                 HttpUtil.setTransferEncodingChunked(response, true);
             }
-            // Add keep alive header as per:
-            // - http://www.w3.org/Protocols/HTTP/1.1/draft-ietf-http-v11-spec-01.html#Connection
+        }
+
+        // Add keep alive header as per:
+        // http://www.w3.org/Protocols/HTTP/1.1/draft-ietf-http-v11-spec-01.html#Connection
+        // If already set (e.g. WebSocket upgrade), do not override
+        if (keepAlive && !headers.containsKey(HttpHeaderNames.CONNECTION.toString())) {
             response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
         }
 
-        LOGGER.finest(() -> log("Writing headers: " + status));
-        ctx.writeAndFlush(response)
-                .addListener(future -> {
-                    if (future.isSuccess()) {
-                        headersFuture.complete(this);
-                    }
-                })
-                .addListener(completeOnFailureListener("An exception occurred when writing headers."))
-                .addListener(ChannelFutureListener.CLOSE_ON_FAILURE);
+        // Content length optimization attempt
+        if (!lengthOptimization) {
+            LOGGER.finest(() -> log("Writing headers: " + status));
+            initWriteResponse();
+        }
+    }
+
+    private boolean isWebSocketUpgrade(Http.ResponseStatus status, Map<String, List<String>> headers) {
+        return status.code() == 101 && headers.containsKey("Upgrade")
+                && headers.get("Upgrade").contains("websocket");
+    }
+
+    /**
+     * Determines if response is a WebSockets upgrade.
+     *
+     * @return Outcome of test.
+     * @throws IllegalStateException If headers not written yet.
+     */
+    boolean isWebSocketUpgrade() {
+        return isWebSocketUpgrade;
     }
 
     /**
@@ -154,17 +213,29 @@ class BareResponseImpl implements BareResponse {
             responseFuture.complete(this);
         } else {
             LOGGER.log(Level.FINER, throwable, () -> log("Response completion failed!"));
+            internallyClosed.set(true);
             responseFuture.completeExceptionally(throwable);
         }
     }
 
     /**
-     * Completes this response. No other data are send to the client when response is completed. All caches are flushed.
+     * Completes this response. No other data are send to the client when response is completed.
+     * All caches are flushed.
      *
      * @param throwable if {@code not-null} then this response is completed exceptionally.
      */
     private void completeInternal(Throwable throwable) {
-        if (!internallyClosed.compareAndSet(false, true)) {
+        boolean wasClosed = !internallyClosed.compareAndSet(false, true);
+
+        if (prevRequestChunk == null) {
+            completeInternalPipe(wasClosed, throwable);
+        } else {
+            prevRequestChunk = prevRequestChunk.thenRun(() -> completeInternalPipe(wasClosed, throwable));
+        }
+    }
+
+    private void completeInternalPipe(boolean wasClosed, Throwable throwable) {
+        if (wasClosed) {
             // if already closed, as the contract specifies, don't fail
             completeResponseFuture(throwable);
             return;
@@ -172,6 +243,8 @@ class BareResponseImpl implements BareResponse {
 
         if (keepAlive) {
             LOGGER.finest(() -> log("Writing an empty last http content; keep-alive: true"));
+
+            writeLastContent(throwable, ChannelFutureListener.CLOSE_ON_FAILURE);
 
             if (!requestContentConsumed.getAsBoolean()) {
                 // the request content wasn't read, close the connection once the content is fully written.
@@ -182,17 +255,52 @@ class BareResponseImpl implements BareResponse {
                 ctx.channel().read();
             }
 
-            writeLastContent(throwable, ChannelFutureListener.CLOSE_ON_FAILURE);
         } else {
-
             LOGGER.finest(() -> log("Closing with an empty buffer; keep-alive: " + keepAlive));
 
             writeLastContent(throwable, ChannelFutureListener.CLOSE);
         }
     }
 
+    /**
+     * Write last HTTP content. If length optimization is active and a first chunk is cached,
+     * switch content encoding and write response.
+     *
+     * @param throwable A throwable.
+     * @param closeAction Close action listener.
+     */
     private void writeLastContent(final Throwable throwable, final ChannelFutureListener closeAction) {
-        ctx.writeAndFlush(LAST_HTTP_CONTENT)
+        boolean chunked = true;
+        if (lengthOptimization) {
+            if (firstChunk != null) {
+                if (throwable == null) {
+                    HttpUtil.setTransferEncodingChunked(response, false);
+                    HttpUtil.setContentLength(response, firstChunk.remaining());
+                    chunked = false;
+                } else {
+                    //headers not sent yet
+                    response.setStatus(HttpResponseStatus.INTERNAL_SERVER_ERROR);
+                    //We are not using CombinedHttpHeaders
+                    response.headers()
+                            .set(HttpHeaderNames.TRAILER, Response.STREAM_STATUS + "," + Response.STREAM_RESULT);
+                }
+            }
+            initWriteResponse();
+        }
+
+        LastHttpContent lastHttpContent = new DefaultLastHttpContent(Unpooled.EMPTY_BUFFER);
+
+        if (chunked) {
+            if (throwable != null) {
+                lastHttpContent.trailingHeaders()
+                        .set(Response.STREAM_STATUS, 500)
+                        .set(Response.STREAM_RESULT, throwable);
+                LOGGER.log(Level.SEVERE, throwable, () -> log("Upstream error while sending response."));
+            }
+
+        }
+
+        ctx.writeAndFlush(lastHttpContent)
                 .addListener(completeOnFailureListener("An exception occurred when writing last http content."))
                 .addListener(completeOnSuccessListener(throwable))
                 .addListener(closeAction);
@@ -227,29 +335,101 @@ class BareResponseImpl implements BareResponse {
             throw new IllegalStateException("Response is already closed!");
         }
         if (data != null) {
-
-            LOGGER.finest(() -> log("Sending data chunk"));
-
-            DefaultHttpContent httpContent = new DefaultHttpContent(Unpooled.wrappedBuffer(data.data()));
-
-            LOGGER.finest(() -> log("Sending data chunk on event loop thread."));
-
-            ChannelFuture channelFuture;
-            if (data.flush()) {
-                channelFuture = ctx.writeAndFlush(httpContent);
-            } else {
-                channelFuture = ctx.write(httpContent);
+            if (data.isFlushChunk()) {
+                if (prevRequestChunk == null) {
+                   ctx.flush();
+                } else {
+                   prevRequestChunk = prevRequestChunk.thenRun(ctx::flush);
+                }
+                return;
             }
 
-            channelFuture
-                    .addListener(future -> {
-                        data.release();
-                        LOGGER.finest(() -> log("Data chunk sent with result: " + future.isSuccess()));
-                    })
-                    .addListener(completeOnFailureListener("Failure when sending a content!"))
-                    .addListener(ChannelFutureListener.CLOSE_ON_FAILURE);
+            if (lengthOptimization && firstChunk == null) {
+                firstChunk = data.isReadOnly() ? data : data.duplicate();      // cache first chunk
+                return;
+            }
 
+            if (prevRequestChunk == null) {
+                onNextPipe(data);
+            } else {
+                prevRequestChunk = prevRequestChunk.thenRun(() -> onNextPipe(data));
+            }
         }
+    }
+
+    private void onNextPipe(DataChunk data) {
+            if (lengthOptimization) {
+                initWriteResponse();
+            }
+            sendData(data);
+    }
+
+    /**
+     * Initiates write of response and sends first chunk if available.
+     *
+     * @return Future of response or first chunk.
+     */
+    private ChannelFuture initWriteResponse() {
+        ChannelFuture cf = ctx.write(response)
+                .addListener(future -> {
+                    if (future.isSuccess()) {
+                        headersFuture.complete(this);
+                    }
+                })
+                .addListener(completeOnFailureListener("An exception occurred when writing headers."))
+                .addListener(ChannelFutureListener.CLOSE_ON_FAILURE);
+        response = null;
+        if (firstChunk != null) {
+            cf = sendData(firstChunk);
+            firstChunk = null;
+        }
+        lengthOptimization = false;
+        return cf;
+    }
+
+    private ChannelFuture sendData(DataChunk data) {
+        LOGGER.finest(() -> log("Sending data chunk"));
+
+        DefaultHttpContent httpContent;
+        if (data.isBackedBy(ByteBuf.class)) {
+            // DefaultHttpContent will call release, we retain to also call ours
+            ByteBuf[] byteBufs = data.data(ByteBuf.class);
+            if (byteBufs.length == 1) {
+                httpContent = new DefaultHttpContent(byteBufs[0].retain());
+            } else {
+                for (ByteBuf byteBuf : byteBufs) {
+                    byteBuf.retain();
+                }
+                httpContent = new DefaultHttpContent(Unpooled.wrappedBuffer(byteBufs));
+            }
+        } else {
+            httpContent = new DefaultHttpContent(Unpooled.wrappedBuffer(data.data()));
+        }
+
+        LOGGER.finest(() -> log("Sending data chunk on event loop thread."));
+
+        ChannelFuture channelFuture;
+        if (data.flush()) {
+            channelFuture = ctx.writeAndFlush(httpContent);
+        } else {
+            channelFuture = ctx.write(httpContent);
+        }
+
+        return channelFuture
+                .addListener(future -> {
+                    data.writeFuture().ifPresent(writeFuture -> {
+                        // Complete write future based con channel future
+                        if (future.isSuccess()) {
+                            writeFuture.complete(data);
+                        } else {
+                            writeFuture.completeExceptionally(future.cause());
+                        }
+                    });
+                    data.release();
+                    LOGGER.finest(() -> log("Data chunk sent with result: " + future.isSuccess()));
+                })
+                .addListener(completeOnFailureListener("Failure when sending a content!"))
+                .addListener(ChannelFutureListener.CLOSE_ON_FAILURE);
     }
 
     private String log(String s) {
@@ -273,13 +453,15 @@ class BareResponseImpl implements BareResponse {
     }
 
     @Override
-    public CompletionStage<BareResponse> whenCompleted() {
-        return responseFuture;
+    public Single<BareResponse> whenCompleted() {
+        // need to return a new single each time
+        return Single.create(responseFuture);
     }
 
     @Override
-    public CompletionStage<BareResponse> whenHeadersCompleted() {
-        return headersFuture;
+    public Single<BareResponse> whenHeadersCompleted() {
+        // need to return a new single each time
+        return Single.create(headersFuture);
     }
 
     @Override

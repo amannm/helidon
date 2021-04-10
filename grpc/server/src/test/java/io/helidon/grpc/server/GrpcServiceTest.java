@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2020 Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,8 +28,14 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import com.oracle.bedrock.testsupport.deferred.Eventually;
 import org.junit.jupiter.api.Test;
 
+import static com.oracle.bedrock.deferred.DeferredHelper.invoking;
+import static io.helidon.grpc.core.ResponseHelper.complete;
+import static io.helidon.grpc.core.ResponseHelper.completeAsync;
+import static io.helidon.grpc.core.ResponseHelper.stream;
+import static io.helidon.grpc.core.ResponseHelper.streamAsync;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.collection.IsIterableContainingInAnyOrder.containsInAnyOrder;
@@ -53,9 +59,8 @@ public class GrpcServiceTest {
     @Test
     public void shouldCompleteCall() {
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
 
-        service.complete(observer, "foo");
+        complete(observer, "foo");
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -69,9 +74,8 @@ public class GrpcServiceTest {
     public void shouldCompleteCallUsingCompletionStage() {
         CompletionStage<String>    stage    = CompletableFuture.completedFuture("foo");
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
 
-        service.complete(observer, stage);
+        complete(observer, stage);
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -86,11 +90,10 @@ public class GrpcServiceTest {
         CompletableFuture<String>  future   = new CompletableFuture<>();
         RuntimeException           error    = new RuntimeException("Oops!");
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
 
         future.completeExceptionally(error);
 
-        service.complete(observer, future);
+        complete(observer, future);
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -103,9 +106,8 @@ public class GrpcServiceTest {
     public void shouldCompleteCallUsingAsyncCompletionStage() {
         CompletionStage<String>    stage    = CompletableFuture.completedFuture("foo");
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
 
-        service.completeAsync(observer, stage);
+        completeAsync(observer, stage);
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -120,11 +122,10 @@ public class GrpcServiceTest {
         CompletableFuture<String>  future   = new CompletableFuture<>();
         RuntimeException           error    = new RuntimeException("Oops!");
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
 
         future.completeExceptionally(error);
 
-        service.completeAsync(observer, future);
+        completeAsync(observer, future);
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -137,9 +138,8 @@ public class GrpcServiceTest {
     public void shouldCompleteCallUsingAsyncCompletionStageAndExecutor() {
         CompletionStage<String>    stage    = CompletableFuture.completedFuture("foo");
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
 
-        service.completeAsync(observer, stage, EXECUTOR);
+        completeAsync(observer, stage, EXECUTOR);
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -154,11 +154,10 @@ public class GrpcServiceTest {
         CompletableFuture<String>  future   = new CompletableFuture<>();
         RuntimeException           error    = new RuntimeException("Oops!");
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
 
         future.completeExceptionally(error);
 
-        service.completeAsync(observer, future, EXECUTOR);
+        completeAsync(observer, future, EXECUTOR);
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -171,9 +170,8 @@ public class GrpcServiceTest {
     public void shouldCompleteCallUsingCallable() {
         Callable<String>           callable = () -> "foo";
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
 
-        service.complete(observer, callable);
+        complete(observer, callable);
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -188,9 +186,8 @@ public class GrpcServiceTest {
         RuntimeException           error    = new RuntimeException("Oops!");
         Callable<String>           callable = () -> { throw error; };
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
 
-        service.complete(observer, callable);
+        complete(observer, callable);
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -203,9 +200,8 @@ public class GrpcServiceTest {
     public void shouldCompleteCallUsingAsyncCallable() {
         Callable<String>           callable = () -> "foo";
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
 
-        service.completeAsync(observer, callable);
+        completeAsync(observer, callable);
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -220,9 +216,8 @@ public class GrpcServiceTest {
         RuntimeException           error    = new RuntimeException("Oops!");
         Callable<String>           callable = () -> { throw error; };
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
 
-        service.completeAsync(observer, callable);
+        completeAsync(observer, callable);
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -235,9 +230,8 @@ public class GrpcServiceTest {
     public void shouldCompleteCallUsingAsyncCallableAndExecutor() {
         Callable<String>           callable = () -> "foo";
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
 
-        service.completeAsync(observer, callable, EXECUTOR);
+        completeAsync(observer, callable, EXECUTOR);
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -252,9 +246,8 @@ public class GrpcServiceTest {
         RuntimeException           error    = new RuntimeException("Oops!");
         Callable<String>           callable = () -> { throw error; };
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
 
-        service.completeAsync(observer, callable, EXECUTOR);
+        completeAsync(observer, callable, EXECUTOR);
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -267,9 +260,8 @@ public class GrpcServiceTest {
     public void shouldCompleteCallUsingRunnable() {
         Runnable                   runnable = () -> {};
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
 
-        service.complete(observer, runnable, "foo");
+        complete(observer, runnable, "foo");
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -284,9 +276,8 @@ public class GrpcServiceTest {
         RuntimeException           error    = new RuntimeException("Oops!");
         Runnable                   runnable = () -> { throw error; };
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
 
-        service.complete(observer, runnable, "foo");
+        complete(observer, runnable, "foo");
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -299,9 +290,8 @@ public class GrpcServiceTest {
     public void shouldCompleteCallUsingAsyncRunnable() {
         Runnable                   callable = () -> {};
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
 
-        service.completeAsync(observer, callable, "foo");
+        completeAsync(observer, callable, "foo");
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -316,9 +306,8 @@ public class GrpcServiceTest {
         RuntimeException           error    = new RuntimeException("Oops!");
         Runnable                   runnable = () -> { throw error; };
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
 
-        service.completeAsync(observer, runnable, "foo");
+        completeAsync(observer, runnable, "foo");
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -331,9 +320,8 @@ public class GrpcServiceTest {
     public void shouldCompleteCallUsingAsyncRunnableAndExecutor() {
         Runnable                   runnable = () -> {};
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
 
-        service.completeAsync(observer, runnable, "foo", EXECUTOR);
+        completeAsync(observer, runnable, "foo", EXECUTOR);
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -348,9 +336,8 @@ public class GrpcServiceTest {
         RuntimeException           error    = new RuntimeException("Oops!");
         Runnable                   runnable = () -> { throw error; };
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
 
-        service.completeAsync(observer, runnable, "foo", EXECUTOR);
+        completeAsync(observer, runnable, "foo", EXECUTOR);
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -363,10 +350,9 @@ public class GrpcServiceTest {
     @Test
     public void shouldStream() {
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
         List<String> list     = Arrays.asList("One", "Two", "Three");
 
-        service.stream(observer, list.stream());
+        stream(observer, list.stream());
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -379,10 +365,9 @@ public class GrpcServiceTest {
     @Test
     public void shouldStreamAsync() {
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
         List<String>               list     = Arrays.asList("One", "Two", "Three");
 
-        service.streamAsync(observer, list.stream(), EXECUTOR);
+        streamAsync(observer, list.stream(), EXECUTOR);
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -395,10 +380,9 @@ public class GrpcServiceTest {
     @Test
     public void shouldStreamFromSupplier() {
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
         List<String>               list     = Arrays.asList("One", "Two", "Three");
 
-        service.stream(observer, list::stream);
+        stream(observer, list::stream);
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -411,10 +395,9 @@ public class GrpcServiceTest {
     @Test
     public void shouldStreamAsyncFromSupplier() {
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
         List<String>               list     = Arrays.asList("One", "Two", "Three");
 
-        service.streamAsync(observer, list::stream, EXECUTOR);
+        streamAsync(observer, list::stream, EXECUTOR);
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -430,11 +413,10 @@ public class GrpcServiceTest {
         RuntimeException                   error    = new RuntimeException("Oops!");
         Supplier<Stream<? extends String>> supplier = mock(Supplier.class);
         TestStreamObserver<String>         observer = new TestStreamObserver<>();
-        GrpcService                        service  = new GrpcServiceStub();
 
         when(supplier.get()).thenThrow(error);
 
-        service.stream(observer, supplier);
+        stream(observer, supplier);
 
         assertThat(observer.awaitTerminalEvent(), is(true));
 
@@ -447,8 +429,7 @@ public class GrpcServiceTest {
     public void shouldStreamUsingCompletionStage() {
         CompletableFuture<Void>    future   = new CompletableFuture<>();
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
-        Consumer<String> consumer = service.stream(observer, future);
+        Consumer<String> consumer = stream(observer, future);
 
         consumer.accept("One");
         consumer.accept("Two");
@@ -466,15 +447,14 @@ public class GrpcServiceTest {
     @Test
     public void shouldStreamAsyncUsingCompletionStage() {
         CompletableFuture<Void>    future   = new CompletableFuture<>();
-        TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
-        Consumer<String>           consumer = service.streamAsync(observer, future);
+        TestStreamObserver<String> observer = new SynchronizedObserver<>();
+        Consumer<String>           consumer = streamAsync(observer, future);
 
         consumer.accept("One");
         consumer.accept("Two");
         consumer.accept("Three");
 
-        observer.awaitCount(3);
+        Eventually.assertThat(invoking(this).valueCount(observer), is(3));
 
         future.complete(null);
 
@@ -491,13 +471,13 @@ public class GrpcServiceTest {
     public void shouldStreamAsyncWithExecutorUsingCompletionStage() {
         CompletableFuture<Void>    future   = new CompletableFuture<>();
         TestStreamObserver<String> observer = new TestStreamObserver<>();
-        GrpcService                service  = new GrpcServiceStub();
-        Consumer<String>           consumer = service.streamAsync(observer, future, EXECUTOR);
+        Consumer<String>           consumer = streamAsync(observer, future, EXECUTOR);
 
         consumer.accept("One");
         consumer.accept("Two");
         consumer.accept("Three");
-        observer.awaitCount(3);
+
+        Eventually.assertThat(invoking(this).valueCount(observer), is(3));
 
         future.complete(null);
 
@@ -510,11 +490,30 @@ public class GrpcServiceTest {
         assertThat(observer.values(), containsInAnyOrder("One", "Two", "Three"));
     }
 
+    // must be public - used in Eventually.assertThat
+    public int valueCount(TestStreamObserver<?> observer) {
+        List<?> values = observer.values();
+        return values == null ? 0 : values.size();
+    }
 
-    private class GrpcServiceStub
+    private static class GrpcServiceStub
             implements GrpcService {
         @Override
         public void update(ServiceDescriptor.Rules rules) {
+        }
+    }
+
+    /**
+     * A synchronized observer because the super class RxJava TestObserver
+     * is obviously not thread safe.
+     *
+     * @param <T> the type of value being observed
+     */
+    private static class SynchronizedObserver<T>
+            extends TestStreamObserver<T> {
+        @Override
+        public synchronized void onNext(T t) {
+            super.onNext(t);
         }
     }
 }

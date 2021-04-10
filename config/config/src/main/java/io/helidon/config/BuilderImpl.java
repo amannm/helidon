@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2021 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,8 @@
 package io.helidon.config;
 
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -29,53 +30,72 @@ import java.util.concurrent.Executors;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.Supplier;
-import java.util.stream.Collectors;
 
-import javax.annotation.Priority;
-
-import io.helidon.common.CollectionsHelper;
 import io.helidon.common.GenericType;
-import io.helidon.common.reactive.Flow;
+import io.helidon.common.Prioritized;
+import io.helidon.common.serviceloader.HelidonServiceLoader;
+import io.helidon.common.serviceloader.Priorities;
 import io.helidon.config.ConfigMapperManager.MapperProviders;
-import io.helidon.config.internal.ConfigThreadFactory;
-import io.helidon.config.internal.ConfigUtils;
 import io.helidon.config.spi.ConfigContext;
 import io.helidon.config.spi.ConfigFilter;
 import io.helidon.config.spi.ConfigMapper;
 import io.helidon.config.spi.ConfigMapperProvider;
 import io.helidon.config.spi.ConfigParser;
 import io.helidon.config.spi.ConfigSource;
+import io.helidon.config.spi.MergingStrategy;
 import io.helidon.config.spi.OverrideSource;
-
-import static io.helidon.config.ConfigSources.ENV_VARS_NAME;
-import static io.helidon.config.ConfigSources.classpath;
 
 /**
  * {@link Config} Builder implementation.
  */
 class BuilderImpl implements Config.Builder {
-
-    static final Executor DEFAULT_CHANGES_EXECUTOR = Executors.newCachedThreadPool(new ConfigThreadFactory("config"));
-    private static final List<String> DEFAULT_FILE_EXTENSIONS = Arrays.asList("yaml", "conf", "json", "properties");
-
-    private List<ConfigSource> sources;
+    /*
+     * Config sources
+     */
+    // sources "pre-sorted" - all user defined sources without priority will be ordered
+    // as added, as well as config sources from meta configuration
+    private final List<ConfigSource> sources = new LinkedList<>();
+    // to use when more than one source is configured
+    private MergingStrategy mergingStrategy = MergingStrategy.fallback();
+    private boolean hasSystemPropertiesSource;
+    private boolean hasEnvVarSource;
+    /*
+     * Config mapper providers
+     */
+    private final List<PrioritizedMapperProvider> prioritizedMappers = new ArrayList<>();
     private final MapperProviders mapperProviders;
     private boolean mapperServicesEnabled;
+    /*
+     * Config parsers
+     */
     private final List<ConfigParser> parsers;
     private boolean parserServicesEnabled;
+    /*
+     * Config filters
+     */
     private final List<Function<Config, ConfigFilter>> filterProviders;
     private boolean filterServicesEnabled;
-    private boolean cachingEnabled;
+
+    /*
+     * change support
+     */
     private Executor changesExecutor;
-    private int changesMaxBuffer;
+    /*
+     * Other configuration.
+     */
+    private OverrideSource overrideSource;
+
+    /*
+     * Other switches
+     */
+    private boolean cachingEnabled;
     private boolean keyResolving;
+    private boolean valueResolving;
     private boolean systemPropertiesSourceEnabled;
     private boolean environmentVariablesSourceEnabled;
-    private OverrideSource overrideSource;
     private boolean envVarAliasGeneratorEnabled;
 
     BuilderImpl() {
-        sources = null;
         overrideSource = OverrideSources.empty();
         mapperProviders = MapperProviders.create();
         mapperServicesEnabled = true;
@@ -84,28 +104,39 @@ class BuilderImpl implements Config.Builder {
         filterProviders = new ArrayList<>();
         filterServicesEnabled = true;
         cachingEnabled = true;
-        changesExecutor = DEFAULT_CHANGES_EXECUTOR;
-        changesMaxBuffer = Flow.defaultBufferSize();
         keyResolving = true;
+        valueResolving = true;
         systemPropertiesSourceEnabled = true;
         environmentVariablesSourceEnabled = true;
         envVarAliasGeneratorEnabled = false;
     }
 
     @Override
-    public Config.Builder sources(List<Supplier<ConfigSource>> sourceSuppliers) {
-        sources = new ArrayList<>(sourceSuppliers.size());
-        sourceSuppliers.stream().map(Supplier::get).forEach(source -> {
-            sources.add(source);
-            if (source.description().contains(ENV_VARS_NAME)) {
-                envVarAliasGeneratorEnabled = true;
-            }
-        });
+    public Config.Builder sources(List<Supplier<? extends ConfigSource>> sourceSuppliers) {
+        // replace current config sources with the ones provided
+        sources.clear();
+
+        sourceSuppliers.stream()
+                .map(Supplier::get)
+                .forEach(this::addSource);
+
         return this;
     }
 
     @Override
-    public Config.Builder overrides(Supplier<OverrideSource> overridingSource) {
+    public Config.Builder addSource(ConfigSource source) {
+        sources.add(source);
+        if (source instanceof ConfigSources.EnvironmentVariablesConfigSource) {
+            envVarAliasGeneratorEnabled = true;
+            hasEnvVarSource = true;
+        } else if (source instanceof ConfigSources.SystemPropertiesConfigSource) {
+            hasSystemPropertiesSource = true;
+        }
+        return this;
+    }
+
+    @Override
+    public Config.Builder overrides(Supplier<? extends OverrideSource> overridingSource) {
         this.overrideSource = overridingSource.get();
         return this;
     }
@@ -121,6 +152,9 @@ class BuilderImpl implements Config.Builder {
         Objects.requireNonNull(type);
         Objects.requireNonNull(mapper);
 
+        if (String.class.equals(type)) {
+            return this;
+        }
         addMapper(type, config -> mapper.apply(config.asString().get()));
 
         return this;
@@ -131,7 +165,7 @@ class BuilderImpl implements Config.Builder {
         Objects.requireNonNull(type);
         Objects.requireNonNull(mapper);
 
-        addMapper(() -> CollectionsHelper.mapOf(type, mapper));
+        addMapper(() -> Map.of(type, mapper));
 
         return this;
     }
@@ -144,12 +178,12 @@ class BuilderImpl implements Config.Builder {
         addMapper(new ConfigMapperProvider() {
             @Override
             public Map<Class<?>, Function<Config, ?>> mappers() {
-                return CollectionsHelper.mapOf();
+                return Map.of();
             }
 
             @Override
             public Map<GenericType<?>, BiFunction<Config, ConfigMapper, ?>> genericTypeMappers() {
-                return CollectionsHelper.mapOf(type, (config, aMapper) -> mappingFunction.apply(config));
+                return Map.of(type, (config, aMapper) -> mappingFunction.apply(config));
             }
         });
 
@@ -222,12 +256,6 @@ class BuilderImpl implements Config.Builder {
     }
 
     @Override
-    public Config.Builder changesMaxBuffer(int changesMaxBuffer) {
-        this.changesMaxBuffer = changesMaxBuffer;
-        return this;
-    }
-
-    @Override
     public Config.Builder disableKeyResolving() {
         keyResolving = false;
         return this;
@@ -235,6 +263,7 @@ class BuilderImpl implements Config.Builder {
 
     @Override
     public Config.Builder disableValueResolving() {
+        this.valueResolving = false;
         return this;
     }
 
@@ -251,98 +280,164 @@ class BuilderImpl implements Config.Builder {
     }
 
     @Override
-    public Config build() {
-        return buildProvider().newConfig();
+    public AbstractConfigImpl build() {
+        if (valueResolving) {
+            addFilter(ConfigFilters.valueResolving());
+        }
+        if (null == changesExecutor) {
+            changesExecutor = Executors.newCachedThreadPool(new ConfigThreadFactory("config-changes"));
+        }
+
+        /*
+         * Now prepare the config runtime.
+         * We need the following setup:
+         * 1. Mappers
+         * 2. Filters
+         * 3. Config Sources
+         */
+
+        /*
+         Mappers
+         */
+        ConfigMapperManager configMapperManager = buildMappers(prioritizedMappers,
+                                                               mapperProviders,
+                                                               mapperServicesEnabled);
+
+        /*
+         Filters
+         */
+        if (filterServicesEnabled) {
+            addAutoLoadedFilters();
+        }
+
+        /*
+         Config Sources
+         */
+        // collect all sources (in correct order)
+        ConfigContextImpl context = new ConfigContextImpl(changesExecutor, buildParsers(parserServicesEnabled, parsers));
+        ConfigSourcesRuntime configSources = buildConfigSources(context);
+
+        Function<String, List<String>> aliasGenerator = envVarAliasGeneratorEnabled
+                ? EnvironmentVariableAliases::aliasesOf
+                : null;
+
+        //config provider
+        return createProvider(configMapperManager,
+                              configSources,
+                              new OverrideSourceRuntime(overrideSource),
+                              filterProviders,
+                              cachingEnabled,
+                              changesExecutor,
+                              keyResolving,
+                              aliasGenerator)
+                .newConfig();
+    }
+
+    private static void addBuiltInMapperServices(List<PrioritizedMapperProvider> prioritizedMappers) {
+        // we must add default mappers using a known priority (200), so they can be overridden by services
+        // and yet we can still define a service that is only used after these (such as config beans)
+        prioritizedMappers
+                .add(new HelidonMapperWrapper(new InternalMapperProvider(ConfigMappers.essentialMappers(),
+                                                                         "essential"), 200));
+        prioritizedMappers
+                .add(new HelidonMapperWrapper(new InternalMapperProvider(ConfigMappers.builtInMappers(),
+                                                                         "built-in"), 200));
     }
 
     @Override
-    public Config.Builder mappersFrom(Config config) {
-        if (config instanceof AbstractConfigImpl) {
-            ConfigMapperManager mapperManager = ((AbstractConfigImpl) config).mapperManager();
-            addMapper(new ConfigMapperProvider() {
-                @Override
-                public Map<Class<?>, Function<Config, ?>> mappers() {
-                    return CollectionsHelper.mapOf();
-                }
+    public Config.Builder config(Config metaConfig) {
+        metaConfig.get("caching.enabled").asBoolean().ifPresent(this::cachingEnabled);
+        metaConfig.get("key-resolving.enabled").asBoolean().ifPresent(this::keyResolvingEnabled);
+        metaConfig.get("parsers.enabled").asBoolean().ifPresent(this::parserServicesEnabled);
+        metaConfig.get("mappers.enabled").asBoolean().ifPresent(this::mapperServicesEnabled);
 
-                @Override
-                public <T> Optional<BiFunction<Config, ConfigMapper, T>> mapper(GenericType<T> type) {
-                    Optional<? extends BiFunction<Config, ConfigMapper, T>> mapper = mapperManager.mapper(type);
-                    return Optional.ofNullable(mapper.orElse(null));
-                }
-            });
-        } else {
-            throw new ConfigException("Unexpected configuration implementation used to copy mappers: "
-                                              + config.getClass().getName());
+        disableSystemPropertiesSource();
+        disableEnvironmentVariablesSource();
+
+        List<ConfigSource> sourceList = new LinkedList<>();
+
+        metaConfig.get("sources")
+                .asNodeList()
+                .ifPresent(list -> list.forEach(it -> sourceList.addAll(MetaConfig.configSource(it))));
+
+        sourceList.forEach(this::addSource);
+        sourceList.clear();
+
+        Config overrideConfig = metaConfig.get("override-source");
+        if (overrideConfig.exists()) {
+            overrides(() -> MetaConfig.overrideSource(overrideConfig));
         }
 
         return this;
     }
 
-    private ProviderImpl buildProvider() {
-
-        //context
-        ConfigContext context = new ConfigContextImpl(buildParsers(parserServicesEnabled, parsers));
-
-        //source
-        ConfigSource targetConfigSource = targetConfigSource(context);
-
-        //mappers
-        ConfigMapperManager configMapperManager = buildMappers(mapperServicesEnabled, mapperProviders);
-
-        if (filterServicesEnabled) {
-            addAutoLoadedFilters();
-        }
-
-        Function<String, List<String>> aliasGenerator = envVarAliasGeneratorEnabled
-                                                        ? EnvironmentVariableAliases::aliasesOf
-                                                        : null;
-
-        //config provider
-        return createProvider(configMapperManager,
-                              targetConfigSource,
-                              overrideSource,
-                              filterProviders,
-                              cachingEnabled,
-                              changesExecutor,
-                              changesMaxBuffer,
-                              keyResolving,
-                              aliasGenerator);
+    @Override
+    public Config.Builder mergingStrategy(MergingStrategy strategy) {
+        this.mergingStrategy = strategy;
+        return this;
     }
 
-    private ConfigSource targetConfigSource(ConfigContext context) {
-        List<ConfigSource> targetSources = new LinkedList<>();
-        if (environmentVariablesSourceEnabled) {
-            targetSources.add(ConfigSources.environmentVariables());
-            envVarAliasGeneratorEnabled = true;
-        }
-        if (systemPropertiesSourceEnabled) {
-            targetSources.add(ConfigSources.systemProperties());
-        }
-        if (sources != null) {
-            targetSources.addAll(sources);
-        } else {
-            targetSources.add(defaultConfigSource());
+    private void cachingEnabled(boolean enabled) {
+        this.cachingEnabled = enabled;
+    }
+
+    private void mapperServicesEnabled(Boolean aBoolean) {
+        this.mapperServicesEnabled = aBoolean;
+    }
+
+    private void parserServicesEnabled(Boolean aBoolean) {
+        parserServicesEnabled = aBoolean;
+    }
+
+    private void keyResolvingEnabled(Boolean aBoolean) {
+        this.keyResolving = aBoolean;
+    }
+
+    private ConfigSourcesRuntime buildConfigSources(ConfigContextImpl context) {
+        List<ConfigSourceRuntimeImpl> targetSources = new LinkedList<>();
+
+        if (systemPropertiesSourceEnabled && !hasSystemPropertiesSource) {
+            hasSystemPropertiesSource = true;
+            targetSources.add(context.sourceRuntimeBase(ConfigSources.systemProperties().build()));
         }
 
-        final ConfigSource targetConfigSource;
-        if (targetSources.size() == 1) {
-            targetConfigSource = targetSources.get(0);
-        } else {
-            targetConfigSource = ConfigSources.create(targetSources.toArray(new ConfigSource[0])).build();
+        if (environmentVariablesSourceEnabled && !hasEnvVarSource) {
+            hasEnvVarSource = true;
+            targetSources.add(context.sourceRuntimeBase(ConfigSources.environmentVariables()));
         }
-        targetConfigSource.init(context);
-        return targetConfigSource;
+
+        if (hasEnvVarSource) {
+            envVarAliasGeneratorEnabled = true;
+        }
+
+        boolean nothingConfigured = sources.isEmpty();
+
+        if (nothingConfigured) {
+            // use meta configuration to load all sources
+            MetaConfig.configSources(mediaType -> context.findParser(mediaType).isPresent(), context.supportedSuffixes())
+                    .stream()
+                    .map(context::sourceRuntimeBase)
+                    .forEach(targetSources::add);
+        } else {
+            // add all configured or discovered sources
+
+            // configured sources are always first in the list (explicitly added by user)
+            sources.stream()
+                    .map(context::sourceRuntimeBase)
+                    .forEach(targetSources::add);
+        }
+
+        // targetSources now contain runtimes correctly ordered for each config source
+        return new ConfigSourcesRuntime(targetSources, mergingStrategy);
     }
 
     @SuppressWarnings("ParameterNumber")
     ProviderImpl createProvider(ConfigMapperManager configMapperManager,
-                                ConfigSource targetConfigSource,
-                                OverrideSource overrideSource,
+                                ConfigSourcesRuntime targetConfigSource,
+                                OverrideSourceRuntime overrideSource,
                                 List<Function<Config, ConfigFilter>> filterProviders,
                                 boolean cachingEnabled,
                                 Executor changesExecutor,
-                                int changesMaxBuffer,
                                 boolean keyResolving,
                                 Function<String, List<String>> aliasGenerator) {
         return new ProviderImpl(configMapperManager,
@@ -351,7 +446,6 @@ class BuilderImpl implements Config.Builder {
                                 filterProviders,
                                 cachingEnabled,
                                 changesExecutor,
-                                changesMaxBuffer,
                                 keyResolving,
                                 aliasGenerator);
     }
@@ -359,39 +453,6 @@ class BuilderImpl implements Config.Builder {
     //
     // utils
     //
-
-    private static ConfigSource defaultConfigSource() {
-        final List<ConfigSource> sources = new ArrayList<>();
-        final ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
-        final List<ConfigSource> meta = defaultConfigSources(classLoader, "meta-config");
-        if (!meta.isEmpty()) {
-            sources.add(ConfigSources.load(toDefaultConfigSource(meta)).build());
-        }
-        sources.addAll(defaultConfigSources(classLoader, "application"));
-        return ConfigSources.create(toDefaultConfigSource(sources)).build();
-    }
-
-    private static List<ConfigSource> defaultConfigSources(final ClassLoader classLoader, final String baseResourceName) {
-        final List<ConfigSource> sources = new ArrayList<>();
-        for (final String extension : DEFAULT_FILE_EXTENSIONS) {
-            final String resource = baseResourceName + "." + extension;
-            if (classLoader.getResource(resource) != null) {
-                sources.add(classpath(resource).optional().build());
-            }
-        }
-        return sources;
-    }
-
-    private static ConfigSource toDefaultConfigSource(final List<ConfigSource> sources) {
-        if (sources.isEmpty()) {
-            return ConfigSources.empty();
-        } else if (sources.size() == 1) {
-            return sources.get(0);
-        } else {
-            return new UseFirstAvailableConfigSource(sources);
-        }
-    }
-
     static List<ConfigParser> buildParsers(boolean servicesEnabled, List<ConfigParser> userDefinedParsers) {
         List<ConfigParser> parsers = new LinkedList<>(userDefinedParsers);
         if (servicesEnabled) {
@@ -400,42 +461,47 @@ class BuilderImpl implements Config.Builder {
         return parsers;
     }
 
-    static ConfigMapperManager buildMappers(boolean servicesEnabled,
-                                            MapperProviders userDefinedProviders) {
+    // this is a unit test method
+    static ConfigMapperManager buildMappers(MapperProviders userDefinedProviders) {
+        return buildMappers(new ArrayList<>(), userDefinedProviders, false);
+    }
+
+    static ConfigMapperManager buildMappers(List<PrioritizedMapperProvider> prioritizedMappers,
+                                            MapperProviders userDefinedProviders,
+                                            boolean mapperServicesEnabled) {
+
+        // prioritized mapper providers
+        if (mapperServicesEnabled) {
+            loadMapperServices(prioritizedMappers);
+        }
+        addBuiltInMapperServices(prioritizedMappers);
+        Priorities.sort(prioritizedMappers);
+
+        // as the mapperProviders.add adds the last as first, we need to reverse order
+        Collections.reverse(prioritizedMappers);
 
         MapperProviders providers = MapperProviders.create();
 
-        List<ConfigMapperProvider> prioritizedProviders = new LinkedList<>();
-
-        // we must add default mappers using a known priority (49), so they can be overridden by services
-        // and yet we can still define a service that is only used after these (such as config beans)
-        prioritizedProviders.add(new InternalPriorityMapperProvider(ConfigMappers.essentialMappers()));
-        prioritizedProviders.add(new InternalPriorityMapperProvider(ConfigMappers.builtInMappers()));
-
-        if (servicesEnabled) {
-            loadMapperServices(prioritizedProviders);
-        }
-
-        prioritizedProviders = ConfigUtils
-                .asPrioritizedStream(prioritizedProviders, ConfigMapperProvider.PRIORITY)
-                .collect(Collectors.toList());
-
-        // add built in converters and converters from service loader
-        prioritizedProviders.forEach(providers::add);
-
+        // these are added first, as they end up last
+        prioritizedMappers.forEach(providers::add);
         // user defined converters always have priority over anything else
         providers.addAll(userDefinedProviders);
 
         return new ConfigMapperManager(providers);
     }
 
-    private static void loadMapperServices(List<ConfigMapperProvider> providers) {
-        ServiceLoader.load(ConfigMapperProvider.class)
-                .forEach(providers::add);
+    private static void loadMapperServices(List<PrioritizedMapperProvider> providers) {
+        HelidonServiceLoader.builder(ServiceLoader.load(ConfigMapperProvider.class))
+                .defaultPriority(ConfigMapperProvider.PRIORITY)
+                .build()
+                .forEach(mapper -> providers.add(new HelidonMapperWrapper(mapper, Priorities.find(mapper, 100))));
     }
 
     private static List<ConfigParser> loadParserServices() {
-        return loadPrioritizedServices(ConfigParser.class, ConfigParser.PRIORITY);
+        return HelidonServiceLoader.builder(ServiceLoader.load(ConfigParser.class))
+                .defaultPriority(ConfigParser.PRIORITY)
+                .build()
+                .asList();
     }
 
     private void addAutoLoadedFilters() {
@@ -456,43 +522,59 @@ class BuilderImpl implements Config.Builder {
         /*
          * Map each autoloaded ConfigFilter to a filter-providing function.
          */
-        ConfigUtils.asStream(ServiceLoader.load(ConfigFilter.class).iterator())
-                .map(filter -> (Function<Config, ConfigFilter>) (Config t) -> filter)
+        HelidonServiceLoader.builder(ServiceLoader.load(ConfigFilter.class))
+                .defaultPriority(ConfigFilter.PRIORITY)
+                .build()
+                .asList()
+                .stream()
+                .map(LoadedFilterProvider::new)
                 .forEach(this::addFilter);
-    }
-
-    private static <T> List<T> loadPrioritizedServices(Class<T> serviceClass, int priority) {
-        return ConfigUtils
-                .asPrioritizedStream(ServiceLoader.load(serviceClass), priority)
-                .collect(Collectors.toList());
     }
 
     /**
      * {@link ConfigContext} implementation.
      */
     static class ConfigContextImpl implements ConfigContext {
+        private final Map<ConfigSource, ConfigSourceRuntimeImpl> runtimes = new IdentityHashMap<>();
 
+        private final Executor changesExecutor;
         private final List<ConfigParser> configParsers;
 
-        /**
-         * Creates a config context.
-         *
-         * @param configParsers a config parsers
-         */
-        ConfigContextImpl(List<ConfigParser> configParsers) {
+        ConfigContextImpl(Executor changesExecutor, List<ConfigParser> configParsers) {
+            this.changesExecutor = changesExecutor;
             this.configParsers = configParsers;
         }
 
         @Override
-        public Optional<ConfigParser> findParser(String mediaType) {
-            if (mediaType == null) {
-                throw new NullPointerException("Unknown media type of resource.");
-            }
+        public ConfigSourceRuntime sourceRuntime(ConfigSource source) {
+            return sourceRuntimeBase(source);
+        }
+
+        private ConfigSourceRuntimeImpl sourceRuntimeBase(ConfigSource source) {
+            return runtimes.computeIfAbsent(source, it -> new ConfigSourceRuntimeImpl(this, source));
+        }
+
+        Optional<ConfigParser> findParser(String mediaType) {
+            Objects.requireNonNull(mediaType, "Unknown media type of resource.");
+
             return configParsers.stream()
                     .filter(parser -> parser.supportedMediaTypes().contains(mediaType))
                     .findFirst();
         }
 
+        Executor changesExecutor() {
+            return changesExecutor;
+        }
+
+        List<String> supportedSuffixes() {
+            List<String> result = new LinkedList<>();
+
+            configParsers.stream()
+                    .map(ConfigParser::supportedSuffixes)
+                    .forEach(result::addAll);
+
+            return result;
+        }
     }
 
     /**
@@ -504,30 +586,148 @@ class BuilderImpl implements Config.Builder {
         }
 
         static final Config EMPTY = new BuilderImpl()
+                // the empty config source is needed, so we do not look for meta config or default
+                // config sources
                 .sources(ConfigSources.empty())
                 .overrides(OverrideSources.empty())
                 .disableEnvironmentVariablesSource()
                 .disableSystemPropertiesSource()
                 .disableParserServices()
                 .disableFilterServices()
+                .changesExecutor(command -> {})
                 .build();
 
     }
 
-    /**
-     * Internal mapper with low priority to enable overrides.
-     */
-    @Priority(200)
-    static class InternalPriorityMapperProvider implements ConfigMapperProvider {
+    static class InternalMapperProvider implements ConfigMapperProvider {
         private final Map<Class<?>, Function<Config, ?>> converterMap;
+        private final String name;
 
-        InternalPriorityMapperProvider(Map<Class<?>, Function<Config, ?>> converterMap) {
+        InternalMapperProvider(Map<Class<?>, Function<Config, ?>> converterMap, String name) {
             this.converterMap = converterMap;
+            this.name = name;
         }
 
         @Override
         public Map<Class<?>, Function<Config, ?>> mappers() {
             return converterMap;
+        }
+
+        @Override
+        public String toString() {
+            return name + " internal mappers";
+        }
+    }
+
+    private interface PrioritizedMapperProvider extends Prioritized,
+                                                        ConfigMapperProvider {
+    }
+
+    private static final class HelidonMapperWrapper implements PrioritizedMapperProvider {
+        private final ConfigMapperProvider delegate;
+        private final int priority;
+
+        private HelidonMapperWrapper(ConfigMapperProvider delegate, int priority) {
+            this.delegate = delegate;
+            this.priority = priority;
+        }
+
+        @Override
+        public int priority() {
+            return priority;
+        }
+
+        @Override
+        public Map<Class<?>, Function<Config, ?>> mappers() {
+            return delegate.mappers();
+        }
+
+        @Override
+        public Map<GenericType<?>, BiFunction<Config, ConfigMapper, ?>> genericTypeMappers() {
+            return delegate.genericTypeMappers();
+        }
+
+        @Override
+        public <T> Optional<Function<Config, T>> mapper(Class<T> type) {
+            return delegate.mapper(type);
+        }
+
+        @Override
+        public <T> Optional<BiFunction<Config, ConfigMapper, T>> mapper(GenericType<T> type) {
+            return delegate.mapper(type);
+        }
+
+        @Override
+        public String toString() {
+            return priority + ": " + delegate;
+        }
+    }
+
+    private static final class PrioritizedConfigSource implements Prioritized {
+        private final HelidonSourceWithPriority source;
+        private final ConfigContext context;
+
+        private PrioritizedConfigSource(HelidonSourceWithPriority source, ConfigContext context) {
+            this.source = source;
+            this.context = context;
+        }
+
+        private ConfigSourceRuntimeImpl runtime(ConfigContextImpl context) {
+            return context.sourceRuntimeBase(source.unwrap());
+        }
+
+        @Override
+        public int priority() {
+            return source.priority(context);
+        }
+    }
+
+    private static final class HelidonSourceWithPriority {
+        private final ConfigSource configSource;
+        private final Integer explicitPriority;
+
+        private HelidonSourceWithPriority(ConfigSource configSource, Integer explicitPriority) {
+            this.configSource = configSource;
+            this.explicitPriority = explicitPriority;
+        }
+
+        ConfigSource unwrap() {
+            return configSource;
+        }
+
+        int priority(ConfigContext context) {
+            // first - explicit priority. If configured by user, return it
+            if (null != explicitPriority) {
+                return explicitPriority;
+            }
+
+            // ordinal from data
+            return context.sourceRuntime(configSource)
+                    .node("config_priority")
+                    .flatMap(node -> node.value()
+                            .map(Integer::parseInt))
+                    .orElseGet(() -> {
+                        // the config source does not have an ordinal configured, I need to get it from other places
+                        return Priorities.find(configSource, 100);
+                    });
+        }
+    }
+
+    private static class LoadedFilterProvider implements Function<Config, ConfigFilter> {
+        private final ConfigFilter filter;
+
+        private LoadedFilterProvider(ConfigFilter filter) {
+            this.filter = filter;
+        }
+
+        @Override
+        public ConfigFilter apply(Config config) {
+            return filter;
+        }
+
+        @Override
+        public String toString() {
+            return filter.toString();
         }
     }
 }

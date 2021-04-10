@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2021 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,8 +24,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.TreeMap;
 
-import io.helidon.common.CollectionsHelper;
-import io.helidon.common.OptionalHelper;
 import io.helidon.common.configurable.Resource;
 import io.helidon.common.pki.KeyConfig;
 import io.helidon.security.SecurityEnvironment;
@@ -104,30 +102,30 @@ public class HttpSignatureTest {
                 + "headers=(request-target) host date digest content-length\","
                 + "signature=\"Base64(RSA-SHA256(signing string))\",algorithm=\"rsa-sha256\",abcd=\"asf";
 
-        HttpSignature httpSignature = HttpSignature.fromHeader(invalidSignature);
+        HttpSignature httpSignature = HttpSignature.fromHeader(invalidSignature, false);
         Optional<String> validate = httpSignature.validate();
 
-        OptionalHelper.from(validate).ifPresentOrElse(msg -> assertThat(msg, containsString("signature is a mandatory")),
-                                                      () -> fail("Should have failed validation"));
+        validate.ifPresentOrElse(msg -> assertThat(msg, containsString("signature is a mandatory")),
+                                 () -> fail("Should have failed validation"));
     }
 
     @Test
     public void testInvalid2() {
         String invalidSignature = "This is a wrong signature";
 
-        HttpSignature httpSignature = HttpSignature.fromHeader(invalidSignature);
+        HttpSignature httpSignature = HttpSignature.fromHeader(invalidSignature, false);
         Optional<String> validate = httpSignature.validate();
 
-        OptionalHelper.from(validate).ifPresentOrElse(msg -> assertThat(msg, containsString("keyId is a mandatory")),
-                                                      () -> fail("Should have failed validation"));
+        validate.ifPresentOrElse(msg -> assertThat(msg, containsString("keyId is a mandatory")),
+                                 () -> fail("Should have failed validation"));
     }
 
     @Test
     public void testSignRsa() {
         Map<String, List<String>> headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
-        headers.put("DATE", CollectionsHelper.listOf("Thu, 08 Jun 2014 18:32:30 GMT"));
-        headers.put("Authorization", CollectionsHelper.listOf("basic dXNlcm5hbWU6cGFzc3dvcmQ="));
-        headers.put("host", CollectionsHelper.listOf("example.org"));
+        headers.put("DATE", List.of("Thu, 08 Jun 2014 18:32:30 GMT"));
+        headers.put("Authorization", List.of("basic dXNlcm5hbWU6cGFzc3dvcmQ="));
+        headers.put("host", List.of("example.org"));
 
         SecurityEnvironment env = buildSecurityEnv("/my/resource", headers);
         OutboundTargetDefinition outboundDef = OutboundTargetDefinition.builder("rsa-key-12345")
@@ -139,28 +137,27 @@ public class HttpSignatureTest {
                 .signedHeaders(SignedHeadersConfig.builder()
                                        .defaultConfig(SignedHeadersConfig
                                                               .HeadersConfig
-                                                              .create(CollectionsHelper.listOf("date",
-                                                                                               "host",
-                                                                                               "(request-target)",
-                                                                                               "authorization")))
+                                                              .create(List.of("date",
+                                                                              "host",
+                                                                              "(request-target)",
+                                                                              "authorization")))
                                        .build())
                 .build();
 
-        HttpSignature signature = HttpSignature.sign(env, outboundDef, new HashMap<>());
+        HttpSignature signature = HttpSignature.sign(env, outboundDef, new HashMap<>(), false);
         assertThat(signature.getBase64Signature(),
-                   is("Rm5PjuUdJ927esGQ2gm/6QBEM9IM7J5qSZuP8NV8+GXUfboUV6ST2EYLYniFGt5/3BO/2+vqQdqezdTVPr/JCwqBx"
-                              + "+9T9ZynG7YqRjKvXzcmvQOu5vQmCK5x/HR0fXU41Pjq+jywsD0k6KdxF6TWr6tvWRbwFet+YSb0088o"
-                              + "/65Xeqghw7s0vShf7jPZsaaIHnvM9SjWgix9VvpdEn4NDvqhebieVD3Swb1VG5+/7ECQ9VAlX30U5"
-                              + "/jQ5hPO3yuvRlg5kkMjJiN7tf/68If/5O2Z4H+7VmW0b1U69/JoOQJA0av1gCX7HVfa"
-                              + "/YTCxIK4UFiI6h963q2x7LSkqhdWGA=="));
+                   is("ptxE46kM/gV8L6Q0jcrY5Sxet7vy/rqldwxJfWT5ncbALbwvr4puc3/M0q8pT/srI/bLvtPPZxQN9flaWyHo2ieypRSRZe5/2FrcME"
+                              + "+XuGNOu9BVJlCrALgLwi2VGJ3i2BIH2EvpLqF4TmM7AHIn/E6trWf30Kr90sTrk1ewx7kJ0bPVfY6Pv1mJpuA4MVr"
+                              + "++BvvXMuGooMI+nepToPlseGgtnYMJPuTRwZJbTLo02yN1rKnRZauCxCCd0bgi9zhJRlXFuoLzthCgqHElCXVXrW"
+                              + "+ZGACUaRDC+XawXg6eyMWp6GVegS/NVRnaqEkBsl0hn7X/dmEXDDERyK66qn0WA=="));
     }
 
     @Test
     public void testSignHmac() {
         Map<String, List<String>> headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
-        headers.put("DATE", CollectionsHelper.listOf("Thu, 08 Jun 2014 18:32:30 GMT"));
-        headers.put("Authorization", CollectionsHelper.listOf("basic dXNlcm5hbWU6cGFzc3dvcmQ="));
-        headers.put("host", CollectionsHelper.listOf("example.org"));
+        headers.put("DATE", List.of("Thu, 08 Jun 2014 18:32:30 GMT"));
+        headers.put("Authorization", List.of("basic dXNlcm5hbWU6cGFzc3dvcmQ="));
+        headers.put("host", List.of("example.org"));
         SecurityEnvironment env = buildSecurityEnv("/my/resource", headers);
 
         OutboundTargetDefinition outboundDef = OutboundTargetDefinition.builder("myServiceKeyId")
@@ -168,16 +165,16 @@ public class HttpSignatureTest {
                 .signedHeaders(SignedHeadersConfig.builder()
                                        .defaultConfig(SignedHeadersConfig
                                                               .HeadersConfig
-                                                              .create(CollectionsHelper.listOf("date",
-                                                                                               "host",
-                                                                                               "(request-target)",
-                                                                                               "authorization")))
+                                                              .create(List.of("date",
+                                                                              "host",
+                                                                              "(request-target)",
+                                                                              "authorization")))
                                        .build())
                 .build();
 
-        HttpSignature signature = HttpSignature.sign(env, outboundDef, new HashMap<>());
+        HttpSignature signature = HttpSignature.sign(env, outboundDef, new HashMap<>(), false);
 
-        assertThat(signature.getBase64Signature(), is("0BcQq9TckrtGvlpHiMxNqMq0vW6dPVTGVDUVDrGwZyI="));
+        assertThat(signature.getBase64Signature(), is("yaxxY9oY0+qKhAr9sYCfmYQyKjRVctN6z1c9ANhbZ/c="));
     }
 
     @Test
@@ -191,39 +188,34 @@ public class HttpSignatureTest {
                 .signedHeaders(SignedHeadersConfig.builder()
                                        .defaultConfig(SignedHeadersConfig
                                                               .HeadersConfig
-                                                              .create(CollectionsHelper.listOf("date",
-                                                                                               "host")))
+                                                              .create(List.of("date",
+                                                                              "host")))
                                        .build())
                 .build();
 
         // just make sure this does not throw an exception for missing headers
-        HttpSignature.sign(env, outboundDef, new HashMap<>());
-    }
-
-    private SecurityEnvironment buildSecurityEnv(String path, Map<String, List<String>> headers) {
-        return SecurityEnvironment.builder()
-                .path(path)
-                .headers(headers)
-                .build();
+        HttpSignature.sign(env, outboundDef, new HashMap<>(), false);
     }
 
     @Test
     public void testVerifyRsa() {
         HttpSignature signature = HttpSignature.fromHeader("keyId=\"rsa-key-12345\",algorithm=\"rsa-sha256\",headers=\"date "
                                                                    + "host (request-target) authorization\","
-                                                                   + "signature=\"Rm5PjuUdJ927esGQ2gm/6QBEM9IM7J5qSZuP8NV8+GXUf"
-                                                                   + "boUV6ST2EYLYniFGt5/3BO/2+vqQdqezdTVPr/JCwqBx+9T9ZynG7YqRj"
-                                                                   + "KvXzcmvQOu5vQmCK5x/HR0fXU41Pjq+jywsD0k6KdxF6TWr6tvWRbwFet"
-                                                                   + "+YSb0088o/65Xeqghw7s0vShf7jPZsaaIHnvM9SjWgix9VvpdEn4NDvqh"
-                                                                   + "ebieVD3Swb1VG5+/7ECQ9VAlX30U5/jQ5hPO3yuvRlg5kkMjJiN7tf/68"
-                                                                   + "If/5O2Z4H+7VmW0b1U69/JoOQJA0av1gCX7HVfa/YTCxIK4UFiI6h963q"
-                                                                   + "2x7LSkqhdWGA==\"");
+                                                                   + "signature=\"ptxE46kM/gV8L6Q0jcrY5Sxet7vy"
+                                                                   + "/rqldwxJfWT5ncbALbwvr4puc3/M0q8pT/srI"
+                                                                   + "/bLvtPPZxQN9flaWyHo2ieypRSRZe5/2FrcME"
+                                                                   + "+XuGNOu9BVJlCrALgLwi2VGJ3i2BIH2EvpLqF4TmM7AHIn"
+                                                                   + "/E6trWf30Kr90sTrk1ewx7kJ0bPVfY6Pv1mJpuA4MVr++BvvXMuGooMI"
+                                                                   + "+nepToPlseGgtnYMJPuTRwZJbTLo02yN1rKnRZauCxCCd0bgi9zhJRlX"
+                                                                   + "FuoLzthCgqHElCXVXrW+ZGACUaRDC+XawXg6eyMWp6GVegS/NVRnaqEk"
+                                                                   + "Bsl0hn7X/dmEXDDERyK66qn0WA==\"",
+                                                           false);
         signature.validate().ifPresent(Assertions::fail);
 
         Map<String, List<String>> headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
-        headers.put("DATE", CollectionsHelper.listOf("Thu, 08 Jun 2014 18:32:30 GMT"));
-        headers.put("Authorization", CollectionsHelper.listOf("basic dXNlcm5hbWU6cGFzc3dvcmQ="));
-        headers.put("host", CollectionsHelper.listOf("example.org"));
+        headers.put("DATE", List.of("Thu, 08 Jun 2014 18:32:30 GMT"));
+        headers.put("Authorization", List.of("basic dXNlcm5hbWU6cGFzc3dvcmQ="));
+        headers.put("host", List.of("example.org"));
 
         InboundClientDefinition inboundClientDef = InboundClientDefinition.builder("rsa-key-12345")
                 .principalName("theService")
@@ -236,7 +228,7 @@ public class HttpSignatureTest {
 
         signature.validate(buildSecurityEnv("/my/resource", headers),
                            inboundClientDef,
-                           CollectionsHelper.listOf("date"))
+                           List.of("date"))
                 .ifPresent(Assertions::fail);
     }
 
@@ -244,14 +236,14 @@ public class HttpSignatureTest {
     public void testVerifyHmac() {
         HttpSignature signature = HttpSignature.fromHeader(
                 "keyId=\"myServiceKeyId\",algorithm=\"hmac-sha256\",headers=\"date host (request-target) authorization\","
-                        + "signature=\"0BcQq9TckrtGvlpHiMxNqMq0vW6dPVTGVDUVDrGwZyI=\"");
+                        + "signature=\"yaxxY9oY0+qKhAr9sYCfmYQyKjRVctN6z1c9ANhbZ/c=\"", false);
 
         signature.validate().ifPresent(Assertions::fail);
 
         Map<String, List<String>> headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
-        headers.put("DATE", CollectionsHelper.listOf("Thu, 08 Jun 2014 18:32:30 GMT"));
-        headers.put("Authorization", CollectionsHelper.listOf("basic dXNlcm5hbWU6cGFzc3dvcmQ="));
-        headers.put("host", CollectionsHelper.listOf("example.org"));
+        headers.put("DATE", List.of("Thu, 08 Jun 2014 18:32:30 GMT"));
+        headers.put("Authorization", List.of("basic dXNlcm5hbWU6cGFzc3dvcmQ="));
+        headers.put("host", List.of("example.org"));
         SecurityEnvironment env = buildSecurityEnv("/my/resource", headers);
 
         InboundClientDefinition inboundClientDef = InboundClientDefinition.builder("myServiceKeyId")
@@ -261,18 +253,25 @@ public class HttpSignatureTest {
 
         signature.validate(env,
                            inboundClientDef,
-                           CollectionsHelper.listOf("date"))
+                           List.of("date"))
                 .ifPresent(Assertions::fail);
     }
 
+    private SecurityEnvironment buildSecurityEnv(String path, Map<String, List<String>> headers) {
+        return SecurityEnvironment.builder()
+                .path(path)
+                .headers(headers)
+                .build();
+    }
+
     private void testValid(String validSignature) {
-        HttpSignature httpSignature = HttpSignature.fromHeader(validSignature);
+        HttpSignature httpSignature = HttpSignature.fromHeader(validSignature, false);
 
         assertThat(httpSignature.getAlgorithm(), is("rsa-sha256"));
         assertThat(httpSignature.getKeyId(), is("rsa-key-1"));
         assertThat(httpSignature.getBase64Signature(), is("Base64(RSA-SHA256(signing string))"));
         assertThat(httpSignature.getHeaders(),
-                   equalTo(CollectionsHelper.listOf("(request-target)", "host", "date", "digest", "content-length")));
+                   equalTo(List.of("(request-target)", "host", "date", "digest", "content-length")));
     }
 
 }

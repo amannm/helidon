@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,17 +23,23 @@ import java.lang.annotation.Target;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 
+import javax.enterprise.inject.InjectionException;
 import javax.enterprise.inject.Instance;
+import javax.enterprise.inject.literal.NamedLiteral;
 import javax.enterprise.inject.spi.CDI;
 import javax.enterprise.util.AnnotationLiteral;
 import javax.inject.Qualifier;
 import javax.management.MBeanServer;
+import javax.sql.DataSource;
 import javax.transaction.TransactionManager;
 
+import org.eclipse.persistence.exceptions.ValidationException;
 import org.eclipse.persistence.platform.server.JMXServerPlatformBase;
-import org.eclipse.persistence.platform.server.ServerPlatformBase; // for javadoc only
+import org.eclipse.persistence.platform.server.ServerPlatformBase;
 import org.eclipse.persistence.sessions.DatabaseSession;
+import org.eclipse.persistence.sessions.DatasourceLogin;
 import org.eclipse.persistence.sessions.JNDIConnector;
+import org.eclipse.persistence.sessions.Session;
 import org.eclipse.persistence.transaction.JTATransactionController;
 
 /**
@@ -183,15 +189,59 @@ public class CDISEPlatform extends JMXServerPlatformBase {
      * ServerPlatformBase#initializeExternalTransactionController()
      * superclass implementation}.
      *
+     * <p>This method also acquires a {@link DataSource} from
+     * {@linkplain CDI CDI} proactively, and {@linkplain
+     * JNDIConnector#setDataSource(DataSource) installs it} to
+     * pre&euml;mpt any JNDI operations.</p>
+     *
+     * @exception ValidationException if a {@link DataSource} could
+     * not be acquired
+     *
      * @see ServerPlatformBase#initializeExternalTransactionController()
+     *
+     * @see Session#getDatasourceLogin()
+     *
+     * @see DatasourceLogin#getConnector()
+     *
+     * @see JNDIConnector
+     *
+     * @see JNDIConnector#getName()
+     *
+     * @see JNDIConnector#setDataSource(DataSource)
      */
     @Override
     public void initializeExternalTransactionController() {
         final CDI<Object> cdi = CDI.current();
-        if (cdi == null || cdi.select(TransactionManager.class).isUnsatisfied()) {
+        assert cdi != null;
+        if (cdi.select(TransactionManager.class).isUnsatisfied()) {
             this.disableJTA();
         }
         super.initializeExternalTransactionController();
+
+        // See https://github.com/oracle/helidon/issues/949.  This is
+        // the only spot where we can actually change the Connector
+        // that is used by EclipseLink to look up a data source during
+        // JPA "SE mode" persistence unit acquisition such that it
+        // doesn't get overwritten by other EclipseLink internals.
+        final Session session = this.getDatabaseSession();
+        if (session != null) {
+            final Object login = session.getDatasourceLogin();
+            if (login instanceof DatasourceLogin) {
+                final Object connector = ((DatasourceLogin) login).getConnector();
+                if (connector instanceof JNDIConnector) {
+                    final JNDIConnector jndiConnector = (JNDIConnector) connector;
+                    final String dataSourceName = jndiConnector.getName();
+                    if (dataSourceName != null) {
+                        try {
+                            jndiConnector.setDataSource(cdi.select(DataSource.class,
+                                                                   NamedLiteral.of(dataSourceName)).get());
+                        } catch (final InjectionException injectionExceptionOfAnyKind) {
+                            throw ValidationException.cannotAcquireDataSource(dataSourceName, injectionExceptionOfAnyKind);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -287,6 +337,7 @@ public class CDISEPlatform extends JMXServerPlatformBase {
         }
 
     }
+
 
     /**
      * A {@link Qualifier} used to designate various things as being

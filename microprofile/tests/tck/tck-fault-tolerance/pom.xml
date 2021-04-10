@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
 
-    Copyright (c) 2018, 2019 Oracle and/or its affiliates. All rights reserved.
+    Copyright (c) 2018, 2020 Oracle and/or its affiliates. All rights reserved.
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -24,46 +24,26 @@
     <parent>
         <groupId>io.helidon.microprofile.tests</groupId>
         <artifactId>tck-project</artifactId>
-        <version>1.0.4-SNAPSHOT</version>
+        <version>2.3.0-SNAPSHOT</version>
     </parent>
     <artifactId>tck-fault-tolerance</artifactId>
     <name>Helidon Microprofile Tests TCK Fault Tolerance</name>
 
     <dependencies>
         <dependency>
-            <groupId>io.helidon.microprofile</groupId>
-            <artifactId>helidon-microprofile-fault-tolerance</artifactId>
-            <version>${project.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>io.helidon.microprofile.metrics</groupId>
-            <artifactId>helidon-microprofile-metrics</artifactId>
-            <version>${project.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>io.helidon.microprofile.config</groupId>
-            <artifactId>helidon-microprofile-config</artifactId>
-            <version>${project.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>io.helidon.microprofile.config</groupId>
-            <artifactId>helidon-microprofile-config-cdi</artifactId>
-            <version>${project.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
             <groupId>io.helidon.microprofile.tests</groupId>
             <artifactId>helidon-arquillian</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
         </dependency>
-        <!-- To keep HK2 from complaining when run with Java9+ -->
         <dependency>
-            <groupId>javax.activation</groupId>
-            <artifactId>javax.activation-api</artifactId>
+            <groupId>io.helidon.microprofile.bundles</groupId>
+            <artifactId>helidon-microprofile</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>jakarta.activation</groupId>
+            <artifactId>jakarta.activation-api</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -100,6 +80,7 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
                     <systemPropertyVariables>
+                        <fault-tolerance.commandThreadPoolSize>32</fault-tolerance.commandThreadPoolSize>
                         <java.util.logging.config.file>src/test/resources/logging.properties</java.util.logging.config.file>
                     </systemPropertyVariables>
                     <suiteXmlFiles>

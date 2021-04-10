@@ -1,5 +1,5 @@
-/*
- * Copyright (c) 2018, 2019 Oracle and/or its affiliates. All rights reserved.
+/**
+ * Copyright (c) 2018, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ package io.helidon.microprofile.metrics;
 import javax.enterprise.context.ApplicationScoped;
 import javax.enterprise.inject.Produces;
 
+import io.helidon.common.LazyValue;
 import io.helidon.metrics.RegistryFactory;
 
 import org.eclipse.microprofile.metrics.MetricRegistry;
@@ -29,33 +30,34 @@ import org.eclipse.microprofile.metrics.annotation.RegistryType;
  * Producer of each type of registry.
  */
 @ApplicationScoped
-public final class RegistryProducer {
-    private static final RegistryFactory REGISTRY_FACTORY = RegistryFactory.getInstance();
+final class RegistryProducer {
+
+    private static final LazyValue<RegistryFactory> REGISTRY_FACTORY = LazyValue.create(RegistryFactory::getInstance);
 
     private RegistryProducer() {
     }
 
     @Produces
-    public static MetricRegistry getDefaultRegistry() {
+    public static org.eclipse.microprofile.metrics.MetricRegistry getDefaultRegistry() {
         return getApplicationRegistry();
     }
 
     @Produces
     @RegistryType(type = Type.APPLICATION)
-    public static MetricRegistry getApplicationRegistry() {
-        return REGISTRY_FACTORY.getRegistry(Type.APPLICATION);
+    public static org.eclipse.microprofile.metrics.MetricRegistry getApplicationRegistry() {
+        return REGISTRY_FACTORY.get().getRegistry(Type.APPLICATION);
     }
 
     @Produces
     @RegistryType(type = Type.BASE)
-    public static MetricRegistry getBaseRegistry() {
-        return REGISTRY_FACTORY.getRegistry(Type.BASE);
+    public static org.eclipse.microprofile.metrics.MetricRegistry getBaseRegistry() {
+        return REGISTRY_FACTORY.get().getRegistry(Type.BASE);
     }
 
     @Produces
     @RegistryType(type = Type.VENDOR)
-    public static MetricRegistry getVendorRegistry() {
-        return REGISTRY_FACTORY.getRegistry(Type.VENDOR);
+    public static org.eclipse.microprofile.metrics.MetricRegistry getVendorRegistry() {
+        return REGISTRY_FACTORY.get().getRegistry(Type.VENDOR);
     }
 
     /**

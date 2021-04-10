@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2018 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -93,7 +93,7 @@ public final class PrometheusSupport implements Service {
 
             for (Collector.MetricFamilySamples.Sample sample: metricFamilySamples.samples) {
                 result.append(sample.name);
-                if (sample.labelNames.size() > 0) {
+                if (!sample.labelNames.isEmpty()) {
                     result.append('{');
                     for (int i = 0; i < sample.labelNames.size(); ++i) {
                         result.append(sample.labelNames.get(i))
@@ -204,7 +204,8 @@ public final class PrometheusSupport implements Service {
         private CollectorRegistry registry = CollectorRegistry.defaultRegistry;
         private String path;
 
-        private Builder() {}
+        private Builder() {
+        }
 
         /**
          * Sets collector registry to use, default is {@link CollectorRegistry#defaultRegistry}.

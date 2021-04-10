@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2021 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,6 +33,7 @@ import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.grpc.ServerServiceDefinition;
+import io.grpc.protobuf.ProtoFileDescriptorSupplier;
 import io.grpc.stub.StreamObserver;
 
 /**
@@ -50,10 +51,21 @@ class BindableServiceImpl implements BindableService {
      */
     private final PriorityBag<ServerInterceptor> globalInterceptors;
 
-
-    BindableServiceImpl(ServiceDescriptor descriptor, PriorityBag<ServerInterceptor> interceptors) {
+    private BindableServiceImpl(ServiceDescriptor descriptor, PriorityBag<ServerInterceptor> interceptors) {
         this.descriptor = descriptor;
         this.globalInterceptors = interceptors.copyMe();
+    }
+
+    /**
+     * Create a {@link BindableServiceImpl} for a gRPC service.
+     *
+     * @param descriptor    the service descriptor
+     * @param interceptors  the bag of interceptors to apply to the service
+     *
+     * @return a {@link BindableServiceImpl} for the gRPC service
+     */
+    static BindableServiceImpl create(ServiceDescriptor descriptor, PriorityBag<ServerInterceptor> interceptors) {
+        return new BindableServiceImpl(descriptor, interceptors);
     }
 
     // ---- BindableService implementation ----------------------------------
@@ -61,8 +73,14 @@ class BindableServiceImpl implements BindableService {
     @SuppressWarnings("unchecked")
     @Override
     public ServerServiceDefinition bindService() {
-        ServerServiceDefinition.Builder builder = ServerServiceDefinition.builder(descriptor.name());
+        io.grpc.ServiceDescriptor.Builder serviceDescriptorBuilder = io.grpc.ServiceDescriptor.newBuilder(descriptor.name());
+        if (descriptor.proto() != null) {
+            serviceDescriptorBuilder.setSchemaDescriptor((ProtoFileDescriptorSupplier) descriptor::proto);
+        }
+        descriptor.methods()
+                .forEach(method -> serviceDescriptorBuilder.addMethod(method.descriptor()));
 
+        ServerServiceDefinition.Builder builder = ServerServiceDefinition.builder(serviceDescriptorBuilder.build());
         descriptor.methods()
                 .forEach(method -> builder.addMethod(method.descriptor(), wrapCallHandler(method)));
 
@@ -74,13 +92,13 @@ class BindableServiceImpl implements BindableService {
     private <ReqT, RespT> ServerCallHandler<ReqT, RespT> wrapCallHandler(MethodDescriptor<ReqT, RespT> method) {
         ServerCallHandler<ReqT, RespT> handler = method.callHandler();
 
-        PriorityBag<ServerInterceptor> priorityServerInterceptors = new PriorityBag<>(InterceptorPriorities.USER);
+        PriorityBag<ServerInterceptor> priorityServerInterceptors = PriorityBag.withDefaultPriority(InterceptorPriorities.USER);
         priorityServerInterceptors.addAll(globalInterceptors);
         priorityServerInterceptors.addAll(descriptor.interceptors());
         priorityServerInterceptors.addAll(method.interceptors());
         List<ServerInterceptor> interceptors = priorityServerInterceptors.stream().collect(Collectors.toList());
 
-        if (interceptors.size() > 0) {
+        if (!interceptors.isEmpty()) {
             LinkedHashSet<ServerInterceptor> uniqueInterceptors = new LinkedHashSet<>(interceptors.size());
 
             // iterate the interceptors in reverse order so that the handler chain is in the correct order

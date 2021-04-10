@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,61 +16,25 @@
 
 package io.helidon.media.common;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.charset.Charset;
-import java.nio.charset.IllegalCharsetNameException;
-import java.nio.charset.StandardCharsets;
-import java.nio.charset.UnsupportedCharsetException;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.Flow.Publisher;
 import java.util.function.Function;
 
 import io.helidon.common.http.DataChunk;
-import io.helidon.common.reactive.Flow;
-import io.helidon.common.reactive.ReactiveStreamsAdapter;
+import io.helidon.common.reactive.IoMulti;
 import io.helidon.common.reactive.RetrySchema;
-
-import reactor.core.publisher.Mono;
+import io.helidon.common.reactive.Single;
 
 /**
- * A utility class for various handy response content writers.
- * <p>
- * Some of these writers are by default registered on the response.
+ * Utility class that provides standalone mechanisms for writing message body
+ * content.
  */
 public final class ContentWriters {
-
-    private static final ByteArrayWriter COPY_BYTE_ARRAY_WRITER = new ByteArrayWriter(true);
-    private static final ByteArrayWriter BYTE_ARRAY_WRITER = new ByteArrayWriter(false);
-
-    private static final Map<Charset, CharSequenceWriter> CHAR_SEQUENCE_WRITERS = new HashMap<>();
-    private static final Map<Charset, CharBufferWriter> CHAR_BUFFER_WRITERS = new HashMap<>();
-
-    static {
-        addWriters(StandardCharsets.UTF_8);
-        addWriters(StandardCharsets.UTF_16);
-        addWriters(StandardCharsets.ISO_8859_1);
-        addWriters(StandardCharsets.US_ASCII);
-
-        // try to register another common charset readers
-        addWriters("cp1252");
-        addWriters("cp1250");
-        addWriters("ISO-8859-2");
-    }
-
-    private static void addWriters(final Charset charset) {
-        CHAR_SEQUENCE_WRITERS.put(charset, new CharSequenceWriter(charset));
-        CHAR_BUFFER_WRITERS.put(charset, new CharBufferWriter(charset));
-    }
-
-    private static void addWriters(final String charset) {
-        try {
-            addWriters(Charset.forName(charset));
-        } catch (Exception ignored) {
-            // ignored
-        }
-    }
 
     /**
      * A utility class constructor.
@@ -79,149 +43,160 @@ public final class ContentWriters {
     }
 
     /**
+     * Create a {@link DataChunk} with the given byte array and return a
+     * {@link Single}.
+     *
+     * @param bytes the byte array
+     * @param copy if {@code true} the byte array is copied
+     * @return Single
+     * @since 2.0.0
+     */
+    public static Single<DataChunk> writeBytes(byte[] bytes, boolean copy) {
+        byte[] data;
+        if (copy) {
+            data = new byte[bytes.length];
+            System.arraycopy(bytes, 0, data, 0, bytes.length);
+        } else {
+            data = bytes;
+        }
+        return Single.just(DataChunk.create(false, ByteBuffer.wrap(data)));
+    }
+
+    /**
+     * Create a publisher of {@link DataChunk} with the given
+     * {@link CharSequence} / {@link Charset} and return a {@link Single}.
+     *
+     * @param cs the char sequence
+     * @param charset the charset to use to encode the char sequence
+     * @return Single
+     * @since 2.0.0
+     */
+    public static Single<DataChunk> writeCharSequence(CharSequence cs, Charset charset) {
+        return Single.just(DataChunk.create(false, charset.encode(cs.toString())));
+    }
+
+    /**
+     * Create a a publisher {@link DataChunk} with the given
+     * {@link CharBuffer} / {@link Charset} and return a {@link Single}.
+     *
+     * @param buffer the char buffer
+     * @param charset the charset to use to encode the char sequence
+     * @return Single
+     * @since 2.0.0
+     */
+    public static Single<DataChunk> writeCharBuffer(CharBuffer buffer, Charset charset) {
+        return Single.just(DataChunk.create(false, buffer.encode(charset)));
+    }
+
+    /**
+     * Create a a publisher {@link DataChunk} with the given
+     * {@link Throwable} / {@link Charset} and return a {@link Single}.
+     *
+     * @param throwable the {@link Throwable}
+     * @param charset the charset to use to encode the stack trace
+     * @return Single
+     * @since 2.0.0
+     */
+    public static Single<DataChunk> writeStackTrace(Throwable throwable, Charset charset) {
+        final StringWriter stringWriter = new StringWriter();
+        final PrintWriter printWriter = new PrintWriter(stringWriter);
+        String stackTraceString = null;
+        try {
+            throwable.printStackTrace(printWriter);
+            stackTraceString = stringWriter.toString();
+        } finally {
+            printWriter.close();
+        }
+        final Single<DataChunk> returnValue;
+        if (stackTraceString.isEmpty()) {
+            returnValue = Single.<DataChunk>empty();
+        } else {
+            returnValue = writeCharSequence(stackTraceString, charset);
+        }
+        return returnValue;
+    }
+
+    /**
      * Returns a writer function for {@code byte[]}.
      * <p>
-     * The {@code copy} variant is by default registered in {@code ServerResponse}.
+     * The {@code copy} variant is by default registered in
+     * {@code ServerResponse}.
      *
-     * @param copy a signal if byte array should be copied - set it {@code true} if {@code byte[]} will be immediately reused.
+     * @param copy a signal if byte array should be copied - set it {@code true}
+     * if {@code byte[]} will be immediately reused.
      * @return a {@code byte[]} writer
+     *
+     * @deprecated since 2.0.0, use {@link #writeBytes(byte[], boolean)} instead
      */
-    public static Function<byte[], Flow.Publisher<DataChunk>> byteArrayWriter(boolean copy) {
-        return copy ? COPY_BYTE_ARRAY_WRITER : BYTE_ARRAY_WRITER;
+    @Deprecated(since = "2.0.0")
+    public static Function<byte[], Publisher<DataChunk>> byteArrayWriter(boolean copy) {
+        return (bytes) -> writeBytes(bytes, copy);
     }
 
     /**
-     * Returns a writer function for {@link CharSequence} using provided standard {@code charset}.
+     * Returns a writer function for {@link CharSequence} using provided
+     * standard {@code charset}.
      * <p>
-     * An instance is by default registered in {@code ServerResponse} for all standard charsets.
+     * An instance is by default registered in {@code ServerResponse} for all
+     * standard charsets.
      *
      * @param charset a standard charset to use
      * @return a {@link String} writer
      * @throws NullPointerException if parameter {@code charset} is {@code null}
+     * @deprecated since 2.0.0, use {@link #writeCharSequence(CharSequence, Charset)}
+     *  or {@link DefaultMediaSupport#charSequenceWriter()} instead
      */
-    public static Function<CharSequence, Flow.Publisher<DataChunk>> charSequenceWriter(Charset charset) {
-        return CHAR_SEQUENCE_WRITERS.computeIfAbsent(charset, key -> new CharSequenceWriter(charset));
+    @Deprecated(since = "2.0.0")
+    public static Function<CharSequence, Publisher<DataChunk>> charSequenceWriter(Charset charset) {
+        return (cs) -> writeCharSequence(cs, charset);
     }
 
     /**
-     * Returns a writer function for {@link CharBuffer} using provided standard {@code charset}.
+     * Returns a writer function for {@link CharBuffer} using provided standard
+     * {@code charset}.
      * <p>
-     * An instance is by default registered in {@code ServerResponse} for all standard charsets.
+     * An instance is by default registered in {@code ServerResponse} for all
+     * standard charsets.
      *
      * @param charset a standard charset to use
      * @return a {@link String} writer
      * @throws NullPointerException if parameter {@code charset} is {@code null}
+     * @deprecated since 2.0.0, use {@link #writeCharBuffer(CharBuffer, Charset)} instead
      */
-    public static Function<CharBuffer, Flow.Publisher<DataChunk>> charBufferWriter(Charset charset) {
-        return CHAR_BUFFER_WRITERS.computeIfAbsent(charset, key -> new CharBufferWriter(charset));
+    @Deprecated(since = "2.0.0")
+    public static Function<CharBuffer, Publisher<DataChunk>> charBufferWriter(Charset charset) {
+        return (buffer) -> writeCharBuffer(buffer, charset);
     }
 
     /**
-     * Returns a writer function for {@link ReadableByteChannel}. Created publisher use provided {@link RetrySchema} to define
-     * delay between unsuccessful read attempts.
+     * Returns a writer function for {@link ReadableByteChannel}. Created
+     * publisher use provided {@link RetrySchema} to define delay between
+     * unsuccessful read attempts.
      *
-     * @param retrySchema a retry schema to use in case when {@code read} operation reads {@code 0 bytes}
+     * @param retrySchema a retry schema to use in case when {@code read}
+     * operation reads {@code 0 bytes}
      * @return a {@link ReadableByteChannel} writer
+     * @deprecated since 2.0.0, use {@link DefaultMediaSupport#byteChannelWriter(RetrySchema)}} instead
      */
-    public static Function<ReadableByteChannel, Flow.Publisher<DataChunk>> byteChannelWriter(RetrySchema retrySchema) {
-        final RetrySchema schema = retrySchema == null ? RetrySchema.linear(0, 10, 250) : retrySchema;
-        return channel -> new ReadableByteChannelPublisher(channel, schema);
+    @Deprecated(since = "2.0.0")
+    public static Function<ReadableByteChannel, Publisher<DataChunk>> byteChannelWriter(RetrySchema retrySchema) {
+        Objects.requireNonNull(retrySchema);
+
+        return channel -> IoMulti.multiFromByteChannelBuilder(channel)
+                .retrySchema(retrySchema)
+                .build()
+                .map(DataChunk::create);
     }
 
     /**
      * Returns a writer function for {@link ReadableByteChannel}.
      *
      * @return a {@link ReadableByteChannel} writer
+     * @deprecated since 2.0.0, use {@link DefaultMediaSupport#byteChannelWriter()}} instead
      */
-    public static Function<ReadableByteChannel, Flow.Publisher<DataChunk>> byteChannelWriter() {
-        return byteChannelWriter(null);
+    @Deprecated(since = "2.0.0")
+    public static Function<ReadableByteChannel, Publisher<DataChunk>> byteChannelWriter() {
+        return channel -> IoMulti.multiFromByteChannel(channel).map(DataChunk::create);
     }
 
-    private static class ByteArrayWriter implements Function<byte[], Flow.Publisher<DataChunk>> {
-
-        private final boolean copy;
-
-        ByteArrayWriter(boolean copy) {
-            this.copy = copy;
-        }
-
-        @Override
-        public Flow.Publisher<DataChunk> apply(byte[] bytes) {
-            if ((bytes == null) || (bytes.length == 0)) {
-                return ReactiveStreamsAdapter.publisherToFlow(Mono.empty());
-            }
-
-            byte[] bs;
-            if (copy) {
-                bs = new byte[bytes.length];
-                System.arraycopy(bytes, 0, bs, 0, bytes.length);
-            } else {
-                bs = bytes;
-            }
-            DataChunk chunk = DataChunk.create(false, ByteBuffer.wrap(bs));
-            return ReactiveStreamsAdapter.publisherToFlow(Mono.just(chunk));
-        }
-    }
-
-    private static class CharSequenceWriter implements Function<CharSequence, Flow.Publisher<DataChunk>> {
-
-        private final Charset charset;
-
-        /**
-         * Creates new instance.
-         *
-         * @param charset a charset to use
-         * @throws NullPointerException if parameter {@code charset} is {@code null}
-         */
-        CharSequenceWriter(Charset charset) {
-            Objects.requireNonNull(charset, "Parameter 'charset' is null!");
-            this.charset = charset;
-        }
-
-        /**
-         * Creates new instance.
-         *
-         * @param charset a name of the charset to use
-         * @throws IllegalCharsetNameException if the given charset name is illegal
-         * @throws IllegalArgumentException    if the given {@code charsetName} is null
-         * @throws UnsupportedCharsetException if no support for the named charset is available in this instance of the JVM
-         */
-        CharSequenceWriter(String charset) {
-            this(Charset.forName(charset));
-        }
-
-        @Override
-        public Flow.Publisher<DataChunk> apply(CharSequence s) {
-            if (s == null || s.length() == 0) {
-                return ReactiveStreamsAdapter.publisherToFlow(Mono.empty());
-            }
-            DataChunk chunk = DataChunk.create(false, charset.encode(s.toString()));
-            return ReactiveStreamsAdapter.publisherToFlow(Mono.just(chunk));
-        }
-    }
-
-    private static class CharBufferWriter implements Function<CharBuffer, Flow.Publisher<DataChunk>> {
-
-        private final Charset charset;
-
-        /**
-         * Creates new instance.
-         *
-         * @param charset a charset to use
-         * @throws NullPointerException if parameter {@code charset} is {@code null}
-         */
-        CharBufferWriter(Charset charset) {
-            Objects.requireNonNull(charset, "Parameter 'charset' is null!");
-            this.charset = charset;
-        }
-
-        @Override
-        public Flow.Publisher<DataChunk> apply(CharBuffer buffer) {
-            if (buffer == null || buffer.size() == 0) {
-                return ReactiveStreamsAdapter.publisherToFlow(Mono.empty());
-            }
-            final DataChunk chunk = DataChunk.create(false, buffer.encode(charset));
-            return ReactiveStreamsAdapter.publisherToFlow(Mono.just(chunk));
-        }
-    }
 }

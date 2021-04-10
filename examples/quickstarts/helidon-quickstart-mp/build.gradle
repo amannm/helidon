@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2021 Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,44 +14,54 @@
  * limitations under the License.
  */
 
-apply plugin: 'java'
-apply plugin: 'maven'
+plugins {
+    id 'java'
+    id 'org.kordamp.gradle.jandex' version '0.6.0'
+}
 
 group = 'io.helidon.examples'
 version = '1.0-SNAPSHOT'
 
 description = """helidon-quickstart-mp"""
 
-sourceCompatibility = 1.8
-targetCompatibility = 1.8
+sourceCompatibility = 11
+targetCompatibility = 11
 tasks.withType(JavaCompile) {
     options.encoding = 'UTF-8'
 }
 
 ext {
-    helidonversion = '1.0.4-SNAPSHOT'
+    helidonversion = '2.3.0-SNAPSHOT'
 }
 
 repositories {
     mavenCentral()
     mavenLocal()
+    gradlePluginPortal()
 }
 
 dependencies {
-    compile "io.helidon:helidon-bom:${project.helidonversion}"
-    compile 'io.helidon.microprofile.bundles:helidon-microprofile-1.2'
-    compile 'org.glassfish.jersey.media:jersey-media-json-binding:2.26'
-    runtime 'org.jboss:jandex:2.0.4.Final'
-    runtime 'javax.activation:javax.activation-api:1.2.0'
-    testCompile 'org.junit.jupiter:junit-jupiter-api:5.1.0'
-    testCompile 'org.junit.jupiter:junit-jupiter-api:5.1.0'
+    // import Helidon BOM
+    implementation enforcedPlatform("io.helidon:helidon-dependencies:${project.helidonversion}")
+    implementation 'io.helidon.microprofile.bundles:helidon-microprofile'
+    implementation 'org.glassfish.jersey.media:jersey-media-json-binding'
+
+    runtimeOnly 'org.jboss:jandex'
+    runtimeOnly 'jakarta.activation:jakarta.activation-api'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter-api'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine'
+}
+
+test {
+    useJUnitPlatform()
 }
 
 // define a custom task to copy all dependencies in the runtime classpath
 // into build/libs/libs
 // uses built-in Copy
 task copyLibs(type: Copy) {
-  from configurations.runtime
+  from configurations.runtimeClasspath
   into 'build/libs/libs'
 }
 
@@ -63,10 +73,24 @@ assemble.dependsOn copyLibs
 // set the main classpath
 // add each jar under build/libs/libs into the classpath
 jar {
-  archiveName = "${project.name}.jar"
+  archiveFileName = "${project.name}.jar"
   manifest {
-    attributes ('Main-Class': 'io.helidon.examples.quickstart.mp.Main',
-                'Class-Path': configurations.runtime.files.collect { "libs/$it.name" }.join(' ')
+    attributes ('Main-Class': 'io.helidon.microprofile.cdi.Main',
+                'Class-Path': configurations.runtimeClasspath.files.collect { "libs/$it.name" }.join(' ')
                )
   }
 }
+
+// This is a work-around for running unit tests.
+// Gradle places resource files under ${buildDir}/resources. In order for
+// beans.xml to get picked up by CDI it must be co-located with the classes.
+// So we move it before running tests.
+// In either case it ends up AOK in the final jar artifact
+task moveBeansXML {
+    doLast {
+        ant.move file: "${buildDir}/resources/main/META-INF/beans.xml",
+                 todir: "${buildDir}/classes/java/main/META-INF"
+    }
+}
+test.dependsOn moveBeansXML
+

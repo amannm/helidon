@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
 
-    Copyright (c) 2018, 2019 Oracle and/or its affiliates. All rights reserved.
+    Copyright (c) 2018, 2021 Oracle and/or its affiliates. All rights reserved.
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -21,112 +21,25 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <parent>
-        <groupId>io.helidon.examples.integrations.cdi</groupId>
-        <artifactId>helidon-examples-integrations-cdi-project</artifactId>
-        <version>1.0.4-SNAPSHOT</version>
+        <groupId>io.helidon.applications</groupId>
+        <artifactId>helidon-mp</artifactId>
+        <version>2.3.0-SNAPSHOT</version>
+        <relativePath>../../../../applications/mp/pom.xml</relativePath>
     </parent>
-    <artifactId>helidon-examples-integrations-jedis</artifactId>
+    <groupId>io.helidon.examples.integrations.cdi</groupId>
+    <artifactId>helidon-examples-integrations-cdi-jedis</artifactId>
     <name>Helidon CDI Extensions Examples Jedis</name>
-
-    <properties>
-        <dependenciesDirectory>libs</dependenciesDirectory>
-        <kubernetesSecretName>${project.artifactId}</kubernetesSecretName>
-        <spotbugs.exclude>${project.basedir}/src/main/spotbugs/exclusions.xml</spotbugs.exclude>
-    </properties>
-
-    <build>
-        <resources>
-            <resource>
-                <directory>src/main/resources</directory>
-                <filtering>true</filtering>
-            </resource>
-        </resources>
-        <plugins>
-            <plugin>
-                <artifactId>maven-dependency-plugin</artifactId>
-                <executions>
-                    <execution>
-                        <id>copy-dependencies</id>
-                        <phase>prepare-package</phase>
-                        <goals>
-                            <goal>copy-dependencies</goal>
-                        </goals>
-                        <configuration>
-                            <outputDirectory>${project.build.directory}/${dependenciesDirectory}</outputDirectory>
-                            <overWriteReleases>false</overWriteReleases>
-                            <overWriteSnapshots>false</overWriteSnapshots>
-                            <overWriteIfNewer>true</overWriteIfNewer>
-                            <overWriteIfNewer>true</overWriteIfNewer>
-                            <includeScope>runtime</includeScope>
-                            <excludeScope>test</excludeScope>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
-            <plugin>
-                <artifactId>maven-jar-plugin</artifactId>
-                <configuration>
-                    <archive>
-                        <manifest>
-                            <addClasspath>true</addClasspath>
-                            <classpathPrefix>${dependenciesDirectory}</classpathPrefix>
-                            <mainClass>io.helidon.microprofile.server.Main</mainClass>
-                        </manifest>
-                    </archive>
-                </configuration>
-            </plugin>
-            <plugin>
-                <artifactId>maven-resources-plugin</artifactId>
-                <executions>
-                    <execution>
-                        <id>copy-resources</id>
-                        <phase>process-resources</phase>
-                        <goals>
-                            <goal>copy-resources</goal>
-                        </goals>
-                        <configuration>
-                            <outputDirectory>${project.build.directory}</outputDirectory>
-                            <resources>
-                                <resource>
-                                    <directory>src/main/docker</directory>
-                                    <filtering>true</filtering>
-                                    <includes>
-                                        <include>Dockerfile</include>
-                                    </includes>
-                                </resource>
-                                <resource>
-                                    <filtering>true</filtering>
-                                    <directory>src/main/k8s</directory>
-                                    <includes>
-                                        <include>jedis.secrets.template</include>
-                                        <include>app.yaml</include>
-                                    </includes>
-                                </resource>
-                            </resources>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
-            <plugin>
-                <artifactId>maven-surefire-plugin</artifactId>
-                <configuration>
-                    <systemPropertyVariables>
-                    </systemPropertyVariables>
-                </configuration>
-            </plugin>
-        </plugins>
-    </build>
 
     <dependencies>
         <!-- Compile-scoped dependencies. -->
         <dependency>
-            <groupId>javax.enterprise</groupId>
-            <artifactId>cdi-api</artifactId>
+            <groupId>jakarta.enterprise</groupId>
+            <artifactId>jakarta.enterprise.cdi-api</artifactId>
             <scope>compile</scope>
         </dependency>
         <dependency>
-            <groupId>javax.ws.rs</groupId>
-            <artifactId>javax.ws.rs-api</artifactId>
+            <groupId>jakarta.ws.rs</groupId>
+            <artifactId>jakarta.ws.rs-api</artifactId>
             <scope>compile</scope>
         </dependency>
         <dependency>
@@ -142,65 +55,53 @@
 
         <!-- Runtime-scoped dependencies. -->
         <dependency>
-            <groupId>org.jboss.weld.se</groupId>
-            <artifactId>weld-se-core</artifactId>
-            <scope>runtime</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>org.jboss.spec.javax.el</groupId>
-                    <artifactId>jboss-el-api_3.0_spec</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>org.jboss.spec.javax.interceptor</groupId>
-                    <artifactId>jboss-interceptors-api_1.2_spec</artifactId>
-                </exclusion>
-            </exclusions>
-        </dependency>
-        <dependency>
             <groupId>io.helidon.integrations.cdi</groupId>
             <artifactId>helidon-integrations-cdi-jedis</artifactId>
-            <version>${project.version}</version>
             <scope>runtime</scope>
         </dependency>
         <dependency>
             <groupId>org.jboss</groupId>
             <artifactId>jandex</artifactId>
             <scope>runtime</scope>
+            <optional>true</optional>
         </dependency>
         <dependency>
             <groupId>io.helidon.microprofile.server</groupId>
             <artifactId>helidon-microprofile-server</artifactId>
-            <version>${project.version}</version>
             <scope>runtime</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>org.glassfish.hk2.external</groupId>
-                    <artifactId>javax.inject</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>io.helidon.microprofile.config</groupId>
-            <artifactId>helidon-microprofile-config-cdi</artifactId>
-            <version>${project.version}</version>
+            <artifactId>helidon-microprofile-config</artifactId>
             <scope>runtime</scope>
         </dependency>
         <dependency>
-            <groupId>javax.activation</groupId>
-            <artifactId>javax.activation-api</artifactId>
+            <groupId>jakarta.activation</groupId>
+            <artifactId>jakarta.activation-api</artifactId>
             <scope>runtime</scope>
-        </dependency>
-
-        <!-- Test-scoped dependencies. -->
-        <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter-api</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.hamcrest</groupId>
-            <artifactId>hamcrest-all</artifactId>
-            <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>copy-libs</id>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.jboss.jandex</groupId>
+                <artifactId>jandex-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>make-index</id>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 </project>

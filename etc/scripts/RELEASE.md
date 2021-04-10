@@ -31,36 +31,43 @@ export VERSION="0.7.0"
 
 1. Create local release branch
     ```
-    git remote add upstream git@github.com:oracle/helidon.git
-    git remote -v
-    git fetch upstream
+    git clone git@github.com:oracle/helidon.git
     git checkout -b release-${VERSION}
     ```
 2. Update local release branch
-   1. Update version if needed (see step 7.3). You should not need to do this.
+   1. Update version if needed (see step 7.3). For Milestone releases
+      (2.0.0-M1) you'll want to change the version to something like
+      2.0.0-M1-SNAPSHOT. For GA releases you probably don't need to
+      touch the version at all (since it is probably already
+      2.0.0-SNAPSHOT).
    2. Update `CHANGELOG`
       1. Move "Unreleased" to new section for the `0.7.0` release
       2. Update new section with latest info
+      3. Add release to dictionary at bottom of CHANGELOG
    3. Commit changes locally
 
 3. Push local release branch to upstream. This will trigger a release build in Wercker.
 
     ```
-    git push upstream release-${VERSION}
+    git push origin release-${VERSION}
     ```
 
 4. Wait for build pipeline in Wercker to complete
 
-5. Check and close nexus staging repository
+   https://app.wercker.com/Helidon/helidon/runs
+
+5. Check nexus staging repository
     1. In browser go to: https://oss.sonatype.org/#view-repositories and login
        as helidonrobot.
     2. On left click "Staging Repositories"
     3. Scroll down list of repositories and find `iohelidon-`. It should be Status closed.
-    5. Smoke test staged artifacts by trying the archetypes that are in the staging
+    
+6. Test staged bits    
+    1. Do quick smoke test by trying an archetype that is in the staging
        repo (see staging repository profile at end of this document)
     
         ```
-        mvn archetype:generate -DinteractiveMode=false \
+        mvn -U archetype:generate -DinteractiveMode=false \
             -DarchetypeGroupId=io.helidon.archetypes \
             -DarchetypeArtifactId=helidon-quickstart-se \
             -DarchetypeVersion=${VERSION} \
@@ -74,9 +81,20 @@ export VERSION="0.7.0"
         mvn package -Possrh-staging
         ```
         
-    6. Release repository: Select repository then click Release (up at the top)
-       1. In description you can put something like "Helidon 0.7.0 Release"
-       2. It might take a while (possibly hours) before the release appears in Maven Central
+    2. Do full smoke test using test script (this requires staging profile to
+       be configured):
+       ```
+       smoketest.sh --giturl=https://github.com/oracle/helidon.git --version=${VERSION} --clean --staged full
+       ```
+    3. The smoketest script will leave its work in `/var/tmp/helidon-smoke.XXXX`.
+       Go there, into the quickstarts and test the native builds and Docker
+       builds (for Docker builds you'll need to update the pom to include
+       the staging repositories.
+       
+6. Release repository: Select repository then click Release (up at the top)
+   1. In description you can put something like "Helidon 0.7.0 Release"
+   2. It might take a while (possibly hours) before the release appears in Maven Central
+   3. To check on progress look at https://repo1.maven.org/maven2/io/helidon/helidon-bom/
        
 6. Create GitHub release
    1. Create a fragment of the change log that you want used for the release
@@ -99,12 +117,15 @@ export VERSION="0.7.0"
       ```
       etc/scripts/release.sh --version=0.7.1-SNAPSHOT update_version
       ```
+      If you perfromed a Milestone release you will likely leave the 
+      SNAPSHOT version in master alone.
    4. Add and commit changes then push
       ```
-      git push upstream post-release-${VERSION}
+      git push origin post-release-${VERSION}
       ```
    5. Create PR and merge into master
 
+8. Now go to helidon-site and look at the RELEASE.md there to release the website with updated docs
 
 # Staging Repository Profile
 

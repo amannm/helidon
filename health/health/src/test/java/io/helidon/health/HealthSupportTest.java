@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 package io.helidon.health;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -95,7 +96,7 @@ class HealthSupportTest {
     }
 
     @BeforeEach
-    private void disableJDKLogging() {
+    void disableJDKLogging() {
         // Disable this logger so that we don't get a bunch of "SEVERE" logs in our test output, which are
         // a normal thing to happen according to some tests we run. Since this is a global setting in the JVM,
         // and we are good citizens, we restore it to the WARNING level after the test is done even though
@@ -115,12 +116,12 @@ class HealthSupportTest {
                                    List<HealthCheck> allChecks,
                                    List<String> finalCheckNames) {
         HealthSupport support = HealthSupport.builder()
-                .add(allChecks)
+                .addLiveness(allChecks)
                 .addExcluded(excludedHealthChecks)
                 .addIncluded(includedHealthChecks)
                 .build();
 
-        HealthSupport.HealthResponse response = support.callHealthChecks();
+        HealthSupport.HealthResponse response = support.callHealthChecks(allChecks);
 
         // Test the JSON
         final JsonObject json = response.json();
@@ -136,7 +137,7 @@ class HealthSupportTest {
         HealthSupport support = HealthSupport.builder()
                 .build();
 
-        HealthSupport.HealthResponse response = support.callHealthChecks();
+        HealthSupport.HealthResponse response = support.callHealthChecks(Collections.emptyList());
 
         assertThat(response.status(), is(Http.Status.OK_200));
 
@@ -149,13 +150,14 @@ class HealthSupportTest {
 
     @Test
     void checksAreSortedByName() {
+        List<HealthCheck> checks = List.of(new GoodHealthCheck("g"),
+                                                            new GoodHealthCheck("a"),
+                                                            new GoodHealthCheck("v"));
         HealthSupport support = HealthSupport.builder()
-                .add(new GoodHealthCheck("g"))
-                .add(new GoodHealthCheck("a"))
-                .add(new GoodHealthCheck("v"))
+                .addLiveness(checks)
                 .build();
 
-        HealthSupport.HealthResponse response = support.callHealthChecks();
+        HealthSupport.HealthResponse response = support.callHealthChecks(checks);
 
         // Test the JSON
         final JsonObject json = response.json();
@@ -168,10 +170,10 @@ class HealthSupportTest {
     @MethodSource(value = {"goodChecks"})
     void passingHealthChecksResultInSuccess(List<HealthCheck> goodChecks) {
         HealthSupport support = HealthSupport.builder()
-                .add(goodChecks)
+                .addLiveness(goodChecks)
                 .build();
 
-        HealthSupport.HealthResponse response = support.callHealthChecks();
+        HealthSupport.HealthResponse response = support.callHealthChecks(goodChecks);
 
         assertThat(response.status(), is(Http.Status.OK_200));
 
@@ -186,10 +188,10 @@ class HealthSupportTest {
     @MethodSource(value = {"badChecks"})
     void failingHealthChecksResultInFailure(List<HealthCheck> badChecks) {
         HealthSupport support = HealthSupport.builder()
-                .add(badChecks)
+                .addLiveness(badChecks)
                 .build();
 
-        HealthSupport.HealthResponse response = support.callHealthChecks();
+        HealthSupport.HealthResponse response = support.callHealthChecks(badChecks);
 
         assertThat(response.status(), is(Http.Status.SERVICE_UNAVAILABLE_503));
 
@@ -204,10 +206,10 @@ class HealthSupportTest {
     @MethodSource(value = {"brokenChecks"})
     void brokenHealthChecksResultInFailure(List<HealthCheck> brokenChecks) {
         HealthSupport support = HealthSupport.builder()
-                .add(brokenChecks)
+                .addLiveness(brokenChecks)
                 .build();
 
-        HealthSupport.HealthResponse response = support.callHealthChecks();
+        HealthSupport.HealthResponse response = support.callHealthChecks(brokenChecks);
 
         assertThat(response.status(), is(Http.Status.INTERNAL_SERVER_ERROR_500));
 
@@ -219,7 +221,7 @@ class HealthSupportTest {
     }
 
     private static final class GoodHealthCheck implements HealthCheck {
-        private String name;
+        private final String name;
 
         private GoodHealthCheck(String name) {
             this.name = name;
@@ -237,7 +239,7 @@ class HealthSupportTest {
     }
 
     private static final class BadHealthCheck implements HealthCheck {
-        private String name;
+        private final String name;
 
         private BadHealthCheck(String name) {
             this.name = name;

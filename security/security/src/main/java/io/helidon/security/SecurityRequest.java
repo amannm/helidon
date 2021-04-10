@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2020 Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 
-import io.opentracing.Span;
+import io.opentracing.SpanContext;
 
 /**
  * Common methods for all security requests (authentication, authorization, and identity propagation).
@@ -38,35 +38,11 @@ public interface SecurityRequest {
     }
 
     /**
-     * Access request message entity.
+     * Parent span for tracing. There may be no parent defined (such as when tracing is disabled).
      *
-     * @return Entity of the request, if current request has entity
-     * @deprecated Access to entity is to be removed from security
+     * @return tracing span context if available
      */
-    @Deprecated
-    default Optional<Entity> requestEntity() {
-        return Optional.empty();
-    }
-
-    /**
-     * Access response message entity.
-     *
-     * @return Entity of the response, if current response can have entity
-     * @deprecated Access to entity is to be removed from security
-     */
-    @Deprecated
-    default Optional<Entity> responseEntity() {
-        return Optional.empty();
-    }
-
-    /**
-     * Get the span to trace subsequent requests.
-     *
-     * @return Open tracing Span instance (started) of the parent of the current request, never null.
-     * @see io.opentracing.util.GlobalTracer#get()
-     * @see io.opentracing.Tracer#buildSpan(String)
-     */
-    Span tracingSpan();
+    Optional<SpanContext> tracingSpanContext();
 
     /**
      * Return a map of keys to resource instances.

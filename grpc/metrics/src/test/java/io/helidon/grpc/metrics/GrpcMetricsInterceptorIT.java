@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2021 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,12 +18,10 @@ package io.helidon.grpc.metrics;
 
 import java.util.Map;
 
-import io.helidon.common.CollectionsHelper;
 import io.helidon.grpc.server.GrpcService;
 import io.helidon.grpc.server.MethodDescriptor;
 import io.helidon.grpc.server.ServiceDescriptor;
 import io.helidon.metrics.MetricsSupport;
-import io.helidon.metrics.RegistryFactory;
 import io.helidon.webserver.Routing;
 
 import io.grpc.Context;
@@ -32,11 +30,18 @@ import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
+import java.util.HashMap;
+import java.util.stream.Collectors;
+
+import org.eclipse.microprofile.metrics.ConcurrentGauge;
 import org.eclipse.microprofile.metrics.Counter;
 import org.eclipse.microprofile.metrics.Histogram;
 import org.eclipse.microprofile.metrics.Meter;
+import org.eclipse.microprofile.metrics.Metric;
+import org.eclipse.microprofile.metrics.MetricID;
 import org.eclipse.microprofile.metrics.MetricRegistry;
 import org.eclipse.microprofile.metrics.MetricUnits;
+import org.eclipse.microprofile.metrics.SimpleTimer;
 import org.eclipse.microprofile.metrics.Timer;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,6 +50,7 @@ import org.mockito.ArgumentCaptor;
 
 import static org.hamcrest.CoreMatchers.containsString;
 import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.CoreMatchers.not;
 import static org.hamcrest.CoreMatchers.notNullValue;
 import static org.hamcrest.CoreMatchers.sameInstance;
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -64,34 +70,28 @@ import static org.mockito.Mockito.when;
 @SuppressWarnings("unchecked")
 public class GrpcMetricsInterceptorIT {
 
-    private static MetricRegistry vendorRegsistry;
+    private static MetricRegistry vendorRegistry;
 
     private static MetricRegistry appRegistry;
 
     private static Meter vendorMeter;
 
-    private static Counter vendorCounter;
-
     private long vendorMeterCount;
-
-    private long vendorCount;
 
     @BeforeAll
     static void configureMetrics() {
         Routing.Rules rules = Routing.builder().get("metrics");
         MetricsSupport.create().update(rules);
 
-        vendorRegsistry = RegistryFactory.getInstance().getRegistry(MetricRegistry.Type.VENDOR);
-        appRegistry = RegistryFactory.getInstance().getRegistry(MetricRegistry.Type.APPLICATION);
-        vendorMeter = vendorRegsistry.meter("grpc.requests.meter");
-        vendorCounter = vendorRegsistry.counter("grpc.requests.count");
+        vendorRegistry = GrpcMetrics.VENDOR_REGISTRY;
+        appRegistry = GrpcMetrics.APP_REGISTRY;
+        vendorMeter = vendorRegistry.meter(GrpcMetrics.GRPC_METER);
     }
 
     @BeforeEach
     public void setup() {
         // obtain the current counts for vendor metrics so that we can assert
         // the count in each test
-        vendorCount = vendorCounter.getCount();
         vendorMeterCount = vendorMeter.getCount();
     }
 
@@ -172,23 +172,77 @@ public class GrpcMetricsInterceptorIT {
     }
 
     @Test
+    public void shouldUseSimpleTimerMetric() throws Exception {
+        ServiceDescriptor descriptor = ServiceDescriptor.builder(createMockService())
+                .unary("barSimplyTimed", this::dummyUnary)
+                .build();
+
+        MethodDescriptor methodDescriptor = descriptor.method("barSimplyTimed");
+        GrpcMetrics metrics = GrpcMetrics.simplyTimed();
+
+        ServerCall<String, String> call = call(metrics, methodDescriptor);
+
+        call.close(Status.OK, new Metadata());
+
+        SimpleTimer appSimpleTimer = appRegistry.simpleTimer("Foo.barSimplyTimed");
+
+        assertVendorMetrics();
+        assertThat(appSimpleTimer.getCount(), is(1L));
+    }
+
+    @Test
+    public void shouldUseConcurrentGaugeMetric() throws Exception {
+        ServiceDescriptor descriptor = ServiceDescriptor.builder(createMockService())
+                .unary("barConcurrentGauge", this::dummyUnary)
+                .build();
+
+        MethodDescriptor methodDescriptor = descriptor.method("barConcurrentGauge");
+        GrpcMetrics metrics = GrpcMetrics.concurrentGauge();
+
+        ServerCall<String, String> call = call(metrics, methodDescriptor);
+
+        call.close(Status.OK, new Metadata());
+
+        ConcurrentGauge appConcurrentGauge = appRegistry.concurrentGauge("Foo.barConcurrentGauge");
+
+        assertVendorMetrics();
+        assertThat(appConcurrentGauge.getCount(), is(1L));
+    }
+
+    @Test
     public void shouldApplyTags() throws Exception {
         ServiceDescriptor descriptor = ServiceDescriptor.builder(createMockService())
                 .unary("barTags", this::dummyUnary)
                 .build();
 
         MethodDescriptor methodDescriptor = descriptor.method("barTags");
-        Map<String, String> tags = CollectionsHelper.mapOf("one", "t1", "two", "t2");
+        Map<String, String> tags = Map.of("one", "t1", "two", "t2");
         GrpcMetrics metrics = GrpcMetrics.counted().tags(tags);
 
         ServerCall<String, String> call = call(metrics, methodDescriptor);
 
         call.close(Status.OK, new Metadata());
 
-        Counter appCounter = appRegistry.counter("Foo.barTags");
+        Map<MetricID, Metric> matchingMetrics =
+                appRegistry.getMetrics().entrySet().stream()
+                        .filter(entry -> entry.getKey().getName().equals("Foo.barTags"))
+                        .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+
+        assertThat(matchingMetrics.size(), not(0));
+        Map.Entry<MetricID, Metric> match = matchingMetrics.entrySet().stream()
+                .findFirst()
+                .orElse(null);
 
         assertVendorMetrics();
-        assertThat(appCounter.toString(), containsString("tags='{one=t1, two=t2}'"));
+        Map<String, String> expected = new HashMap<>();
+        expected.put("one", "t1");
+        expected.put("two", "t2");
+
+        /*
+         * We expect the tags to be on the ID in the version-neutral (and 2.0)
+         * metrics programming model.
+         */
+        assertThat(match.getKey().getTags(), is(expected));
     }
 
     @Test
@@ -302,11 +356,9 @@ public class GrpcMetricsInterceptorIT {
     }
 
     private void assertVendorMetrics() {
-        Meter meter = vendorRegsistry.meter("grpc.requests.meter");
-        Counter counter = vendorRegsistry.counter("grpc.requests.count");
+        Meter meter = vendorRegistry.meter(GrpcMetrics.GRPC_METER);
 
         assertThat(meter.getCount(), is(vendorMeterCount + 1));
-        assertThat(counter.getCount(), is(vendorCount + 1));
     }
 
     private GrpcService createMockService() {

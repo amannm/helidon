@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2021 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -45,14 +45,17 @@ class EvictableCacheImpl<K, V> implements EvictableCache<K, V> {
 
             @Override
             public Thread newThread(Runnable r) {
-                return new Thread(r, getClass().getSimpleName() + "-cachePurge_" + counter.getAndIncrement());
+                Thread newThread = new Thread(r, getClass().getSimpleName() + "-cachePurge_" + counter.getAndIncrement());
+                newThread.setDaemon(true);
+                return newThread;
             }
         };
         EXECUTOR = new ScheduledThreadPoolExecutor(EVICT_THREAD_COUNT, jf);
     }
 
     private final ConcurrentHashMap<K, CacheRecord<K, V>> cacheMap = new ConcurrentHashMap<>();
-    private final long cacheTimoutNanos;
+    private final long cacheTimeoutNanos;
+    private final long overallTimeoutNanos;
     private final long cacheMaxSize;
     private final long evictParallelismThreshold;
     private final ScheduledFuture<?> evictionFuture;
@@ -60,7 +63,8 @@ class EvictableCacheImpl<K, V> implements EvictableCache<K, V> {
 
     EvictableCacheImpl(Builder<K, V> builder) {
         cacheMaxSize = builder.cacheMaxSize();
-        cacheTimoutNanos = TimeUnit.NANOSECONDS.convert(builder.cacheTimeout(), builder.cacheTimeoutUnit());
+        cacheTimeoutNanos = TimeUnit.NANOSECONDS.convert(builder.cacheTimeout(), builder.cacheTimeoutUnit());
+        overallTimeoutNanos = TimeUnit.NANOSECONDS.convert(builder.overallTimeout(), builder.overallTimeoutUnit());
         evictParallelismThreshold = builder.parallelismThreshold();
         evictor = builder.evictor();
 
@@ -112,7 +116,7 @@ class EvictableCacheImpl<K, V> implements EvictableCache<K, V> {
             if ((null == cacheRecord) || evictor.apply(cacheRecord.getKey(), cacheRecord.getValue())) {
                 return null;
             } else {
-                if (cacheRecord.isValid(cacheTimoutNanos)) {
+                if (cacheRecord.isValid(cacheTimeoutNanos, overallTimeoutNanos)) {
                     return cacheRecord;
                 } else {
                     return null;
@@ -122,7 +126,7 @@ class EvictableCacheImpl<K, V> implements EvictableCache<K, V> {
     }
 
     private Optional<CacheRecord<K, V>> validate(CacheRecord<K, V> record) {
-        if (record.isValid(cacheTimoutNanos) && !evictor.apply(record.getKey(), record.getValue())) {
+        if (record.isValid(cacheTimeoutNanos, overallTimeoutNanos) && !evictor.apply(record.getKey(), record.getValue())) {
             return Optional.of(record);
         }
         cacheMap.remove(record.key);
@@ -131,7 +135,7 @@ class EvictableCacheImpl<K, V> implements EvictableCache<K, V> {
 
     private Optional<V> doComputeValue(K key, Supplier<Optional<V>> valueSupplier) {
         CacheRecord<K, V> record = cacheMap.compute(key, (s, cacheRecord) -> {
-            if ((null != cacheRecord) && cacheRecord.isValid(cacheTimoutNanos)) {
+            if ((null != cacheRecord) && cacheRecord.isValid(cacheTimeoutNanos, overallTimeoutNanos)) {
                 cacheRecord.accessed();
                 return cacheRecord;
             }
@@ -159,6 +163,7 @@ class EvictableCacheImpl<K, V> implements EvictableCache<K, V> {
     private static final class CacheRecord<K, V> {
         private final K key;
         private final V value;
+        private final long created = System.nanoTime();
         private volatile long lastAccess = System.nanoTime();
 
         private CacheRecord(K key, V value) {
@@ -170,8 +175,10 @@ class EvictableCacheImpl<K, V> implements EvictableCache<K, V> {
             lastAccess = System.nanoTime();
         }
 
-        private boolean isValid(long timeoutNanos) {
-            return (System.nanoTime() - lastAccess) < timeoutNanos;
+        private boolean isValid(long timeoutNanos, long overallTimeout) {
+            long nano = System.nanoTime();
+
+            return ((nano - created) < overallTimeout) && ((nano - lastAccess) < timeoutNanos);
         }
 
         private K getKey() {

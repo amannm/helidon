@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2020 Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,49 +16,92 @@
 
 package io.helidon.microprofile.faulttolerance;
 
-import java.util.concurrent.Future;
+import java.io.IOException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.stream.Stream;
 
-import org.junit.jupiter.api.Test;
+import io.helidon.microprofile.tests.junit5.AddBean;
+
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.is;
 
 /**
- * Class RetryTest.
+ * Test cases for @Retry.
  */
+@AddBean(RetryBean.class)
+@AddBean(SyntheticRetryBean.class)
 public class RetryTest extends FaultToleranceTest {
 
-    @Test
-    public void testRetryBean() {
-        RetryBean bean = newBean(RetryBean.class);
+    static Stream<Arguments> createBeans() {
+        return Stream.of(
+                Arguments.of(newBean(RetryBean.class), "ManagedRetryBean"),
+                Arguments.of(newNamedBean(SyntheticRetryBean.class), "SyntheticRetryBean"));
+    }
+
+    @ParameterizedTest(name = "{1}")
+    @MethodSource("createBeans")
+    public void testRetryBean(RetryBean bean, String unused) {
+        bean.reset();
         assertThat(bean.getInvocations(), is(0));
         bean.retry();
         assertThat(bean.getInvocations(), is(3));
     }
 
-    @Test
-    public void testRetryBeanFallback() {
-        RetryBean bean = newBean(RetryBean.class);
+    @ParameterizedTest(name = "{1}")
+    @MethodSource("createBeans")
+    public void testRetryBeanFallback(RetryBean bean, String unused) {
+        bean.reset();
         assertThat(bean.getInvocations(), is(0));
         String value = bean.retryWithFallback();
         assertThat(bean.getInvocations(), is(2));
         assertThat(value, is("fallback"));
     }
 
-    @Test
-    public void testRetryAsync() throws Exception {
-        RetryBean bean = newBean(RetryBean.class);
-        Future<String> future = bean.retryAsync();
+    @ParameterizedTest(name = "{1}")
+    @MethodSource("createBeans")
+    public void testRetryAsync(RetryBean bean, String unused) throws Exception {
+        bean.reset();
+        CompletableFuture<String> future = bean.retryAsync();
         future.get();
         assertThat(bean.getInvocations(), is(3));
     }
 
-    @Test
-    public void testRetryWithDelayAndJitter() throws Exception {
-        RetryBean bean = newBean(RetryBean.class);
+    @ParameterizedTest(name = "{1}")
+    @MethodSource("createBeans")
+    public void testRetryWithDelayAndJitter(RetryBean bean, String unused) throws Exception {
+        bean.reset();
         long millis = System.currentTimeMillis();
-        String value = bean.retryWithDelayAndJitter();
+        bean.retryWithDelayAndJitter();
         assertThat(System.currentTimeMillis() - millis, greaterThan(200L));
+    }
+
+    /**
+     * Inspired by a TCK test which makes sure failed executions propagate correctly.
+     *
+     * @param bean the bean to invoke
+     * @param unused bean name to use for the specific test invocation
+     * @throws Exception
+     */
+    @ParameterizedTest(name = "{1}")
+    @MethodSource("createBeans")
+    public void testRetryWithException(RetryBean bean, String unused) throws Exception {
+        bean.reset();
+        CompletionStage<String> future = bean.retryWithException();
+        assertCompleteExceptionally(future.toCompletableFuture(), IOException.class, "Simulated error");
+        assertThat(bean.getInvocations(), is(3));
+    }
+
+    @ParameterizedTest(name = "{1}")
+    @MethodSource("createBeans")
+    public void testRetryCompletionStageWithEventualSuccess(RetryBean bean, String unused) {
+        bean.reset();
+        assertCompleteOk(bean.retryWithUltimateSuccess(), "Success");
+        assertThat(bean.getInvocations(), is(3));
     }
 }

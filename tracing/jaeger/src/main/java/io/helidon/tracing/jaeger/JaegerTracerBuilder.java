@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,23 +20,23 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 
-import io.helidon.common.CollectionsHelper;
 import io.helidon.config.Config;
 import io.helidon.tracing.TracerBuilder;
 
 import io.jaegertracing.Configuration;
 import io.opentracing.Tracer;
 import io.opentracing.noop.NoopTracerFactory;
+import io.opentracing.util.GlobalTracer;
 
 /**
  * The JaegerTracerBuilder is a convenience builder for {@link io.opentracing.Tracer} to use with Jaeger.
  * <p>
  * <b>Unless You want to explicitly depend on Jaeger in Your code, please
- * use {@link io.helidon.tracing.TracerBuilder#create(String)} or {@link io.helidon.tracing.TracerBuilder#create(io.helidon.config.Config)} that is abstracted.</b>
+ * use {@link io.helidon.tracing.TracerBuilder#create(String)} or
+ * {@link io.helidon.tracing.TracerBuilder#create(io.helidon.config.Config)} that is abstracted.</b>
  * <p>
  * The Jaeger tracer uses environment variables and system properties to override the defaults.
  * Except for {@code protocol} and {@code service} these are honored, unless overridden in configuration
@@ -45,7 +45,7 @@ import io.opentracing.noop.NoopTracerFactory;
  *  for details.
  * <p>
  * The following table lists jaeger specific defaults and configuration options.
- * <table>
+ * <table class="config">
  *     <caption>Tracer Configuration Options</caption>
  *     <tr>
  *         <th>option</th>
@@ -147,13 +147,14 @@ import io.opentracing.noop.NoopTracerFactory;
  *
  * @see <a href="https://github.com/jaegertracing/jaeger-client-java/blob/master/jaeger-core/README.md">Jaeger configuration</a>
  */
-public final class JaegerTracerBuilder implements TracerBuilder<JaegerTracerBuilder> {
+public class JaegerTracerBuilder implements TracerBuilder<JaegerTracerBuilder> {
     static final Logger LOGGER = Logger.getLogger(JaegerTracerBuilder.class.getName());
 
     static final boolean DEFAULT_ENABLED = true;
     static final String DEFAULT_HTTP_HOST = "localhost";
     static final int DEFAULT_HTTP_PORT = 14268;
     static final String DEFAULT_HTTP_PATH = "/api/traces";
+
 
     private final Map<String, String> tags = new HashMap<>();
     private final List<Configuration.Propagation> propagations = new ArrayList<>();
@@ -172,9 +173,12 @@ public final class JaegerTracerBuilder implements TracerBuilder<JaegerTracerBuil
     private Number samplerParam;
     private String samplerManager;
     private boolean enabled = DEFAULT_ENABLED;
+    private boolean global = true;
 
-
-    private JaegerTracerBuilder() {
+    /**
+     * Default constructor, does not modify any state.
+     */
+    protected JaegerTracerBuilder() {
     }
 
     /**
@@ -197,12 +201,7 @@ public final class JaegerTracerBuilder implements TracerBuilder<JaegerTracerBuil
      * @see io.helidon.tracing.jaeger.JaegerTracerBuilder#config(io.helidon.config.Config)
      */
     public static JaegerTracerBuilder create(Config config) {
-        String serviceName = config.get("service")
-                .asString()
-                .orElseThrow(() -> new IllegalArgumentException("Configuration must at least contain the service key"));
-
-        return JaegerTracerBuilder.forService(serviceName)
-                .config(config);
+        return create().config(config);
     }
 
     static TracerBuilder<JaegerTracerBuilder> create() {
@@ -269,6 +268,12 @@ public final class JaegerTracerBuilder implements TracerBuilder<JaegerTracerBuil
         return this;
     }
 
+    @Override
+    public JaegerTracerBuilder registerGlobal(boolean global) {
+        this.global = global;
+        return this;
+    }
+
     /**
      * Configure username and password for basic authentication.
      *
@@ -296,16 +301,12 @@ public final class JaegerTracerBuilder implements TracerBuilder<JaegerTracerBuil
 
     @Override
     public JaegerTracerBuilder config(Config config) {
+        config.get("enabled").asBoolean().ifPresent(this::enabled);
         config.get("service").asString().ifPresent(this::serviceName);
-        if (null == serviceName) {
-            throw new IllegalArgumentException("Configuration must at least contain the 'service' key");
-        }
-
         config.get("protocol").asString().ifPresent(this::collectorProtocol);
         config.get("host").asString().ifPresent(this::collectorHost);
         config.get("port").asInt().ifPresent(this::collectorPort);
         config.get("path").asString().ifPresent(this::collectorPath);
-        config.get("enabled").asBoolean().ifPresent(this::enabled);
         config.get("token").asString().ifPresent(this::token);
         config.get("username").asString().ifPresent(this::username);
         config.get("password").asString().ifPresent(this::password);
@@ -321,11 +322,11 @@ public final class JaegerTracerBuilder implements TracerBuilder<JaegerTracerBuil
         config.get("flush-interval-ms").asLong().ifPresent(this::flushIntervalMs);
         config.get("sampler-type").asString().as(SamplerType::create).ifPresent(this::samplerType);
         config.get("sampler-param").asDouble().ifPresent(this::samplerParam);
-        config.get("sampler-manager").asString().ifPresent(this::samplerMananger);
+        config.get("sampler-manager").asString().ifPresent(this::samplerManager);
 
         config.get("tags").detach()
                 .asMap()
-                .orElseGet(CollectionsHelper::mapOf)
+                .orElseGet(Map::of)
                 .forEach(this::addTracerTag);
 
         config.get("boolean-tags")
@@ -344,6 +345,8 @@ public final class JaegerTracerBuilder implements TracerBuilder<JaegerTracerBuil
                     });
                 });
 
+        config.get("global").asBoolean().ifPresent(this::registerGlobal);
+
         return this;
     }
 
@@ -353,7 +356,7 @@ public final class JaegerTracerBuilder implements TracerBuilder<JaegerTracerBuil
      * @param samplerManagerHostPort host and port of the sampler manager
      * @return updated builder instance
      */
-    public JaegerTracerBuilder samplerMananger(String samplerManagerHostPort) {
+    public JaegerTracerBuilder samplerManager(String samplerManagerHostPort) {
         this.samplerManager = samplerManagerHostPort;
         return this;
     }
@@ -433,16 +436,27 @@ public final class JaegerTracerBuilder implements TracerBuilder<JaegerTracerBuil
      */
     @Override
     public Tracer build() {
-        Objects.requireNonNull(serviceName,
-                               "Service name must be defined, either programmatically or in "
-                                       + "configuration using key \"service\"");
+        Tracer result;
 
-        if (!enabled) {
+        if (enabled) {
+            if (null == serviceName) {
+                throw new IllegalArgumentException(
+                        "Configuration must at least contain the 'service' key ('tracing.service` in MP) with service name");
+            }
+
+            result = jaegerConfig().getTracer();
+            LOGGER.info(() -> "Creating Jaeger tracer for '" + serviceName + "' configured with " + protocol + "://"
+                    + host + ":" + port);
+        } else {
             LOGGER.info("Jaeger Tracer is explicitly disabled.");
-            return NoopTracerFactory.create();
+            result = NoopTracerFactory.create();
         }
 
-        return jaegerConfig().getTracer();
+        if (global) {
+            GlobalTracer.registerIfAbsent(result);
+        }
+
+        return result;
     }
 
     Configuration jaegerConfig() {
@@ -616,7 +630,7 @@ public final class JaegerTracerBuilder implements TracerBuilder<JaegerTracerBuil
     }
 
     enum SamplerType {
-        CONSTANT("constant"),
+        CONSTANT("const"),
         PROBABILISTIC("probabilistic"),
         RATE_LIMITING("ratelimiting"),
         REMOTE("remote");

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2021 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,13 @@
 package io.helidon.webserver.jersey;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.URLConnection;
+import java.util.Collections;
+import java.util.List;
 
 import javax.ws.rs.ProcessingException;
 import javax.ws.rs.client.Entity;
@@ -28,14 +31,19 @@ import javax.ws.rs.client.WebTarget;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 
+import io.helidon.common.http.HttpRequest;
 
+import org.glassfish.jersey.CommonProperties;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import static io.helidon.webserver.jersey.JerseySupport.IGNORE_EXCEPTION_RESPONSE;
+import static io.helidon.webserver.jersey.JerseySupport.basePath;
 import static org.hamcrest.CoreMatchers.endsWith;
 import static org.hamcrest.MatcherAssert.assertThat;
-
-import static org.junit.jupiter.api.Assertions.*;
+import static org.hamcrest.Matchers.is;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
  * The JerseySupportTest.
@@ -48,9 +56,6 @@ public class JerseySupportTest {
     public static void startServerAndClient() throws Exception {
         JerseyExampleMain.INSTANCE.webServer(true);
         webTarget = JerseyExampleMain.INSTANCE.target();
-
-        //        JerseyGrizzlyRiMain.main(null);
-        //        webTarget = JerseyExampleMain.client().target("http://localhost:8080");
     }
 
     @Test
@@ -70,7 +75,7 @@ public class JerseySupportTest {
         doAssert(response,
                  "request=io.helidon.webserver.RequestRouting$RoutedRequest\n"
                          + "response=io.helidon.webserver.RequestRouting$RoutedResponse\n"
-                         + "spanContext=io.opentracing.noop.NoopSpanContextImpl");
+                         + "spanContext=null");
     }
 
     @Test
@@ -178,21 +183,21 @@ public class JerseySupportTest {
     public void errorThrownError() throws Exception {
         Response response = get("jersey/first/error/thrown/error");
 
-        doAssert(response, "", 500);
+        doAssert(response, null, 500);
     }
 
     @Test
     public void errorThrownUnhandled() throws Exception {
         Response response = get("jersey/first/error/thrown/unhandled");
 
-        doAssert(response, "", 500);
+        doAssert(response, null, 500);
     }
 
     @Test
     public void simplePostNotFound() throws Exception {
         Response response = post("jersey/first/non-existent-resource");
 
-        doAssert(response, "", Response.Status.NOT_FOUND);
+        doAssert(response, null, Response.Status.NOT_FOUND);
     }
 
     @Test
@@ -219,7 +224,7 @@ public class JerseySupportTest {
             return;
         }
         assertNotNull(response);
-        doAssert(response, "", Response.Status.NOT_FOUND);
+        doAssert(response, null, Response.Status.NOT_FOUND);
     }
 
     /**
@@ -239,7 +244,7 @@ public class JerseySupportTest {
     public void simpleGetNotFound() throws Exception {
         Response response = get("jersey/first/non-existent-resource");
 
-        doAssert(response, "", Response.Status.NOT_FOUND);
+        doAssert(response, null, Response.Status.NOT_FOUND);
     }
 
     @Test
@@ -298,6 +303,78 @@ public class JerseySupportTest {
         doAssert(response, "abc;");
     }
 
+    @Test
+    public void streamingOutput() throws IOException {
+        Response response = webTarget.path("jersey/first/streamingOutput")
+                .request()
+                .get();
+        assertEquals(Response.Status.Family.SUCCESSFUL, response.getStatusInfo().getFamily(),
+                "Unexpected error: " + response.getStatus());
+        try (InputStream is = response.readEntity(InputStream.class)) {
+            byte[] buffer = new byte[32];
+            int n = is.read(buffer);        // should read only first chunk
+            assertThat(new String(buffer, 0, n), is("{ value: \"first\" }\n"));
+            while (is.read(buffer) > 0) {
+                // consume rest of stream
+            }
+        }
+    }
+
+    @Test
+    public void testBasePath() {
+        assertThat(basePath(new PathMockup(null, "/")),
+                is("/"));
+        assertThat(basePath(new PathMockup("/my/application/path", "/")),
+                is("/my/application/path/"));
+        assertThat(basePath(new PathMockup("/my/application/path", "/path")),
+                is("/my/application/"));
+        assertThat(basePath(new PathMockup("/my/application/path", "/application/path")),
+                is("/my/"));
+        assertThat(basePath(new PathMockup("/my/application/path", "/my/application/path")),
+                is("/"));
+    }
+
+    @Test
+    public void testJerseyProperties() {
+        assertThat(System.getProperty(CommonProperties.ALLOW_SYSTEM_PROPERTIES_PROVIDER), is("true"));
+        assertThat(System.getProperty(IGNORE_EXCEPTION_RESPONSE), is("true"));
+    }
+
+    static class PathMockup implements HttpRequest.Path {
+        private final String absolutePath;
+        private final String path;
+
+        PathMockup(String absolutePath, String path) {
+            this.absolutePath = absolutePath;
+            this.path = path;
+        }
+
+        @Override
+        public String param(String name) {
+            return "";
+        }
+
+        @Override
+        public List<String> segments() {
+            return Collections.emptyList();
+        }
+
+        @Override
+        public String toRawString() {
+            return toString();
+        }
+
+        @Override
+        public HttpRequest.Path absolute() {
+            return absolutePath == null ? this : new PathMockup(null, absolutePath);
+        }
+
+        @Override
+        public String toString() {
+            return path;
+        }
+    }
+
     static StringBuilder longData(int bytes) {
         StringBuilder data = new StringBuilder(bytes);
         int i = 0;
@@ -338,7 +415,9 @@ public class JerseySupportTest {
         try {
             assertEquals(expectedStatusCode, response.getStatus(),
                     "Unexpected error: " + response.getStatus());
-            assertEquals(expectedContent, response.readEntity(String.class));
+            if (expectedContent != null) {
+                assertEquals(expectedContent, response.readEntity(String.class));
+            }
         } finally {
             response.close();
         }

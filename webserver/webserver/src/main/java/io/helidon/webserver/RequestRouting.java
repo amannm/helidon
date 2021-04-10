@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2021 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,29 +16,32 @@
 
 package io.helidon.webserver;
 
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-import java.util.stream.Collectors;
 
-import io.helidon.common.CollectionsHelper;
+import io.helidon.common.LazyValue;
 import io.helidon.common.context.Contexts;
 import io.helidon.common.http.AlreadyCompletedException;
 import io.helidon.common.http.Http;
+import io.helidon.common.http.MediaType;
+import io.helidon.tracing.config.SpanTracingConfig;
+import io.helidon.tracing.config.TracingConfigUtil;
 
 import io.opentracing.Span;
 import io.opentracing.SpanContext;
 import io.opentracing.Tracer;
-import io.opentracing.propagation.Format;
-import io.opentracing.propagation.TextMapExtractAdapter;
-import io.opentracing.tag.Tags;
-import io.opentracing.util.GlobalTracer;
 
 /**
  * Default (and only provided) implementation of {@link Routing}.
@@ -46,6 +49,7 @@ import io.opentracing.util.GlobalTracer;
 class RequestRouting implements Routing {
 
     private static final Logger LOGGER = Logger.getLogger(RequestRouting.class.getName());
+
     private final RouteList routes;
     private final List<ErrorHandlerRecord<?>> errorHandlers;
     private final List<Consumer<WebServer>> newWebServerCallbacks;
@@ -55,7 +59,7 @@ class RequestRouting implements Routing {
      *
      * @param routes                effective route
      * @param errorHandlers         a list of error handlers
-     * @param newWebServerCallbacks a list af callback handlers for registration in new {@link WebServer}. It is copied.
+     * @param newWebServerCallbacks a list of callback handlers for registration in new {@link WebServer}. It is copied.
      */
     RequestRouting(RouteList routes, List<ErrorHandlerRecord<?>> errorHandlers, List<Consumer<WebServer>> newWebServerCallbacks) {
         this.routes = routes;
@@ -65,39 +69,23 @@ class RequestRouting implements Routing {
 
     @Override
     public void route(BareRequest bareRequest, BareResponse bareResponse) {
+
         try {
             WebServer webServer = bareRequest.webServer();
-            Span span = createRequestSpan(tracer(webServer), bareRequest);
-            RoutedResponse response = new RoutedResponse(webServer, bareResponse, span.context());
-            response.whenSent()
-                    .thenRun(() -> {
-                        Http.ResponseStatus httpStatus = response.status();
-                        if (httpStatus != null) {
-                            int statusCode = httpStatus.code();
-                            Tags.HTTP_STATUS.set(span, statusCode);
-                            if (statusCode >= 400) {
-                                Tags.ERROR.set(span, true);
-                                span.log(CollectionsHelper.mapOf("event", "error",
-                                                "message", "Response HTTP status: " + statusCode,
-                                                "error.kind", statusCode < 500 ? "ClientError" : "ServerError"));
-                            }
-                        }
-                        span.finish();
-                    })
-                    .exceptionally(t -> {
-                        Tags.ERROR.set(span, true);
-                        span.log(CollectionsHelper.mapOf("event", "error",
-                                        "error.object", t));
-                        span.finish();
-                        return null;
-                    });
+            HashRequestHeaders requestHeaders = new HashRequestHeaders(bareRequest.headers());
+            RoutedResponse response = new RoutedResponse(
+                    webServer,
+                    bareResponse,
+                    requestHeaders.acceptedTypes());
 
             // Jersey needs the raw path (not decoded) so we get that too
             String path = canonicalize(bareRequest.uri().normalize().getPath());
             String rawPath = canonicalize(bareRequest.uri().normalize().getRawPath());
 
             Crawler crawler = new Crawler(routes, path, rawPath, bareRequest.method());
-            RoutedRequest nextRequests = new RoutedRequest(bareRequest, response, webServer, crawler, errorHandlers, span);
+            RoutedRequest nextRequests = new RoutedRequest(bareRequest, response, webServer, crawler, errorHandlers,
+                                                           requestHeaders);
+            response.request(nextRequests);
             nextRequests.next();
         } catch (Error | RuntimeException e) {
             LOGGER.log(Level.SEVERE, "Unexpected error occurred during routing!", e);
@@ -106,43 +94,18 @@ class RequestRouting implements Routing {
     }
 
     private static String canonicalize(String p) {
-        String result = p;
-        if (p.charAt(p.length() - 1) == '/') {
-            result = p.substring(0, p.length() - 1);
-        }
-        if (result.isEmpty()) {
+        String result;
+        if (p == null || p.isEmpty() || p.equals("/")) {
             result = "/";
+        } else {
+            int lastCharIndex = p.length() - 1;
+            if (p.charAt(lastCharIndex) == '/') {
+                result = p.substring(0, lastCharIndex);
+            } else {
+                result = p;
+            }
         }
         return result;
-    }
-
-    private static Tracer tracer(WebServer webServer) {
-        ServerConfiguration configuration = webServer.configuration();
-        Tracer result = null;
-        if (configuration != null) {
-            result = configuration.tracer();
-        }
-        return result == null ? GlobalTracer.get() : result;
-    }
-
-    private Span createRequestSpan(Tracer tracer, BareRequest request) {
-        Tracer.SpanBuilder spanBuilder = tracer.buildSpan("HTTP Request")
-                .withTag(Tags.COMPONENT.getKey(), "helidon-webserver")
-                .withTag(Tags.HTTP_METHOD.getKey(), request.method().name())
-                .withTag(Tags.HTTP_URL.getKey(), request.uri().toString());
-
-        Map<String, String> headersMap = request.headers()
-                                                .entrySet()
-                                                .stream()
-                                                .filter(entry -> !entry.getValue().isEmpty())
-                                                .collect(Collectors.toMap(Map.Entry::getKey,
-                                                                          entry -> entry.getValue().get(0)));
-        SpanContext spanContext = tracer.extract(Format.Builtin.HTTP_HEADERS, new TextMapExtractAdapter(headersMap));
-
-        if (spanContext != null) {
-            spanBuilder.asChildOf(spanContext);
-        }
-        return spanBuilder.startActive(true).span();
     }
 
     /**
@@ -270,9 +233,9 @@ class RequestRouting implements Routing {
         private final LinkedList<ErrorHandlerRecord<? extends Throwable>> errorHandlers;
         private final Path path;
         private final RoutedResponse response;
-        private final Span requestSpan;
 
         private final AtomicBoolean nexted = new AtomicBoolean(false);
+        private final LazyValue<URI> lazyAbsoluteUri = LazyValue.create(super::absoluteUri);
 
         /**
          * Creates new instance.
@@ -282,20 +245,18 @@ class RequestRouting implements Routing {
          * @param webServer     the relevant server
          * @param crawler       a crawler to use for {@code next} method implementation
          * @param errorHandlers a list of error handlers
-         * @param requestSpan   a span related to the whole request processing
          */
         RoutedRequest(BareRequest req,
                       RoutedResponse response,
                       WebServer webServer,
                       Crawler crawler,
                       List<ErrorHandlerRecord<?>> errorHandlers,
-                      Span requestSpan) {
-            super(req, webServer);
+                      HashRequestHeaders headers) {
+            super(req, webServer, headers);
             this.crawler = crawler;
             this.errorHandlers = new LinkedList<>(errorHandlers);
             this.path = null;
             this.response = response;
-            this.requestSpan = requestSpan;
         }
 
         /**
@@ -315,17 +276,15 @@ class RequestRouting implements Routing {
             this.response = response;
             this.path = path;
             this.errorHandlers = new LinkedList<>(errorHandlers);
-            this.requestSpan = request.requestSpan;
+        }
+
+        Span span() {
+            return context().get(ServerRequest.class, Span.class).orElse(null);
         }
 
         @Override
-        public Span span() {
-            return requestSpan;
-        }
-
-        @Override
-        public SpanContext spanContext() {
-            return requestSpan.context();
+        public Optional<SpanContext> spanContext() {
+            return context().get(ServerRequest.class, SpanContext.class);
         }
 
         /**
@@ -349,11 +308,19 @@ class RequestRouting implements Routing {
                     RoutedResponse nextResponse = new RoutedResponse(response);
                     RoutedRequest nextRequest = new RoutedRequest(this, nextResponse, nextItem.path, errorHandlers);
                     LOGGER.finest(() -> "(reqID: " + requestId() + ") Routing next: " + nextItem.path);
-                    requestSpan.log(nextItem.handlerRoute.diagnosticEvent());
-                    // execute in the context, so context can be retrieved with Contexts (runs in our thread)
-                    Contexts.runInContext(nextRequest.context(), () -> nextItem.handlerRoute
+                    Span span = span();
+                    if (null != span) {
+                        SpanTracingConfig spanConfig = TracingConfigUtil.spanConfig("web-server",
+                                                                                    "HTTP Request",
+                                                                                    context());
+                        if (spanConfig.spanLog("handler.class").enabled()) {
+                            span.log(nextItem.handlerRoute.diagnosticEvent());
+                        }
+                    }
+
+                    nextItem.handlerRoute
                             .handler()
-                            .accept(nextRequest, nextResponse));
+                            .accept(nextRequest, nextResponse);
                 } catch (RuntimeException re) {
                     nextNoCheck(re);
                 }
@@ -372,14 +339,23 @@ class RequestRouting implements Routing {
 
         @SuppressWarnings("unchecked")
         private void nextNoCheck(Throwable t) {
+            if (t instanceof CompletionException) {
+                // completion exception always has a cause
+                nextNoCheck(t.getCause());
+                return;
+            }
+
             LOGGER.finest(() -> "(reqID: " + requestId() + ") Routing error: " + t.getClass());
 
             for (ErrorHandlerRecord<?> record = errorHandlers.pollFirst(); record != null; record = errorHandlers.pollFirst()) {
                 if (record.exceptionClass.isAssignableFrom(t.getClass())) {
                     ErrorRoutedRequest nextErrorRequest = new ErrorRoutedRequest(errorHandlers, t);
-                    requestSpan.log(CollectionsHelper.mapOf("event", "error-handler",
-                                           "handler.class", record.errorHandler.getClass().getName(),
-                                           "handled.error.message", t.toString()));
+                    Span span = span();
+                    if (null != span) {
+                        span.log(Map.of("event", "error-handler",
+                                        "handler.class", record.errorHandler.getClass().getName(),
+                                        "handled.error.message", t.toString()));
+                    }
                     try {
                         // there's no way to avoid this cast
                         ((ErrorHandler<Throwable>) record.errorHandler).accept(nextErrorRequest, response, t);
@@ -402,12 +378,21 @@ class RequestRouting implements Routing {
         }
 
         private void defaultHandler(Throwable t) {
-            requestSpan.log(CollectionsHelper.mapOf("event", "error-handler",
-                                   "handler.class", "DEFAULT-ERROR-HANDLER",
-                                   "handled.error.message", t.toString()));
+            Span span = span();
+            if (null != span) {
+                span.log(Map.of("event", "error-handler",
+                                "handler.class", "DEFAULT-ERROR-HANDLER",
+                                "handled.error.message", t.toString()));
+            }
+            String message = null;
             try {
                 if (t instanceof HttpException) {
                     response.status(((HttpException) t).status());
+                } else if (t.getCause() instanceof HttpException) {
+                    response.status(((HttpException) t.getCause()).status());
+                } else if (t instanceof RejectedExecutionException
+                        || t.getCause() instanceof RejectedExecutionException) {
+                    response.status(Http.Status.SERVICE_UNAVAILABLE_503);
                 } else {
                     LOGGER.log(t instanceof Error ? Level.SEVERE : Level.WARNING,
                                "Default error handler: Unhandled exception encountered.",
@@ -415,13 +400,14 @@ class RequestRouting implements Routing {
 
                     response.status(Http.Status.INTERNAL_SERVER_ERROR_500);
                 }
+                message = t.getMessage();
             } catch (AlreadyCompletedException e) {
                 LOGGER.log(Level.WARNING,
                            "Cannot perform error handling of the throwable (see cause of this exception) because headers "
                                    + "were already sent",
                            new IllegalStateException("Headers already sent. Cannot handle the cause of this exception.", t));
             }
-            response.send().exceptionally(throwable -> {
+            response.send(message).exceptionally(throwable -> {
                 LOGGER.log(Level.WARNING, "Default error handler: Response wasn't successfully sent.", throwable);
                 return null;
             });
@@ -440,8 +426,13 @@ class RequestRouting implements Routing {
         }
 
         @Override
-        protected Tracer tracer() {
-            return RequestRouting.tracer(webServer());
+        public Tracer tracer() {
+            return WebTracingConfig.tracer(webServer());
+        }
+
+        @Override
+        public URI absoluteUri() {
+            return lazyAbsoluteUri.get();
         }
 
         private class ErrorRoutedRequest extends RoutedRequest {
@@ -466,21 +457,36 @@ class RequestRouting implements Routing {
 
     private static class RoutedResponse extends Response {
 
-        private final SpanContext requestSpanContext;
+        private final AtomicReference<RoutedRequest> request = new AtomicReference<>();
 
-        RoutedResponse(WebServer webServer, BareResponse bareResponse, SpanContext requestSpanContext) {
-            super(webServer, bareResponse);
-            this.requestSpanContext = requestSpanContext;
+        RoutedResponse(WebServer webServer, BareResponse bareResponse, List<MediaType> acceptedTypes) {
+            super(webServer, bareResponse, acceptedTypes);
         }
 
         RoutedResponse(RoutedResponse response) {
             super(response);
-            this.requestSpanContext = response.requestSpanContext;
+            this.request.set(response.request.get());
         }
 
         @Override
-        SpanContext spanContext() {
-            return requestSpanContext;
+        Optional<SpanContext> spanContext() {
+            return Contexts.context()
+                    .flatMap(ctx -> ctx.get(SpanContext.class));
+        }
+
+        @Override
+        public Void send(Throwable content) {
+            RoutedRequest routedRequest = request.get();
+            if (routedRequest == null) {
+                return super.send(content);
+            } else {
+                routedRequest.nextNoCheck(content);
+            }
+            return null;
+        }
+
+        void request(RoutedRequest request) {
+            this.request.set(request);
         }
     }
 

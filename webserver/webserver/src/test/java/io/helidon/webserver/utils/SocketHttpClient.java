@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2020 Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,9 +26,9 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
+import java.util.List;
 import java.util.logging.Logger;
 
-import io.helidon.common.CollectionsHelper;
 import io.helidon.common.http.Http;
 import io.helidon.webserver.WebServer;
 
@@ -170,20 +170,30 @@ public class SocketHttpClient implements AutoCloseable {
         StringBuilder sb = new StringBuilder();
         String t;
         boolean ending = false;
+        int contentLength = -1;
         while ((t = br.readLine()) != null) {
 
             LOGGER.finest("Received: " + t);
 
+            if (t.toLowerCase().startsWith("content-length")) {
+                int k = t.indexOf(':');
+                contentLength = Integer.parseInt(t.substring(k + 1).trim());
+            }
+
             sb.append(t)
               .append("\n");
 
+            if ("".equalsIgnoreCase(t) && contentLength >= 0) {
+                char[] content = new char[contentLength];
+                br.read(content);
+                sb.append(content);
+                break;
+            }
             if (ending && "".equalsIgnoreCase(t)) {
                 break;
             }
-            if (!ending && "0".equalsIgnoreCase(t)) {
+            if (!ending && ("0".equalsIgnoreCase(t))) {
                 ending = true;
-            } else {
-                ending = false;
             }
         }
         return sb.toString();
@@ -221,7 +231,7 @@ public class SocketHttpClient implements AutoCloseable {
      * @throws IOException in case of an IO error
      */
     public void request(Http.Method method, String path, String payload) throws IOException {
-        request(method, path, payload, CollectionsHelper.listOf("Content-Type: application/x-www-form-urlencoded"));
+        request(method, path, payload, List.of("Content-Type: application/x-www-form-urlencoded"));
     }
 
     /**

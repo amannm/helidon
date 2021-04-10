@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2020 Oracle and/or its affiliates. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ import java.util.logging.Logger;
 
 import io.helidon.common.http.Http;
 import io.helidon.webserver.utils.SocketHttpClient;
+
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -52,13 +53,14 @@ public class EncodingTest {
      * @throws Exception in case of an error
      */
     private static void startServer(int port) throws Exception {
-        webServer = WebServer.create(
-                ServerConfiguration.builder().port(port).build(),
-                Routing.builder()
-                        .get("/foo", (req, res) -> res.send("It works!"))
-                        .get("/foo/{bar}", (req, res) -> res.send(req.path().param("bar")))
-                        .any(Handler.create(String.class, (req, res, entity) -> res.send("Oops " + entity)))
-                        .build())
+        webServer = WebServer.builder()
+                .port(port)
+                .routing(Routing.builder()
+                                 .get("/foo", (req, res) -> res.send("It works!"))
+                                 .get("/foo/{bar}", (req, res) -> res.send(req.path().param("bar")))
+                                 .any(Handler.create(String.class, (req, res, entity) -> res.send("Oops " + entity)))
+                                 .build())
+                .build()
                 .start()
                 .toCompletableFuture()
                 .get(10, TimeUnit.SECONDS);
@@ -74,7 +76,7 @@ public class EncodingTest {
     @Test
     public void testEncodedUrl() throws Exception {
         String s = SocketHttpClient.sendAndReceive("/f%6F%6F", Http.Method.GET, null, webServer);
-        assertThat(cutPayloadAndCheckHeadersFormat(s), is("9\nIt works!\n0\n\n"));
+        assertThat(cutPayloadAndCheckHeadersFormat(s), is("It works!"));
         Map<String, String> headers = cutHeaders(s);
         assertThat(headers, hasEntry("connection", "keep-alive"));
     }
@@ -87,7 +89,7 @@ public class EncodingTest {
     @Test
     public void testEncodedUrlParams() throws Exception {
         String s = SocketHttpClient.sendAndReceive("/f%6F%6F/b%61%72", Http.Method.GET, null, webServer);
-        assertThat(cutPayloadAndCheckHeadersFormat(s), is("3\nbar\n0\n\n"));
+        assertThat(cutPayloadAndCheckHeadersFormat(s), is("bar"));
         Map<String, String> headers = cutHeaders(s);
         assertThat(headers, hasEntry("connection", "keep-alive"));
     }

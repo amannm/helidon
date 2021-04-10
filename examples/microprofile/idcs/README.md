@@ -1,22 +1,16 @@
-
 # Helidon MP IDCS 
 
 Example JAX-RS application with resources protected by IDCS
 
-## Build
+## Build and run
 
-```
+```bash
 mvn package
-```
-
-## Run
-
-```
-mvn exec:java
+java -jar target/helidon-examples-microprofile-security-idcs.jar
 ```
 
 Try the endpoints:
 
 ```
-TBD
+TODO
 ```

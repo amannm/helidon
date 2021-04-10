@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2021 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 package io.helidon.grpc.metrics;
 
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -36,11 +37,16 @@ import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.grpc.Status;
+import org.eclipse.microprofile.metrics.ConcurrentGauge;
 import org.eclipse.microprofile.metrics.Counter;
 import org.eclipse.microprofile.metrics.Histogram;
+import org.eclipse.microprofile.metrics.MetadataBuilder;
 import org.eclipse.microprofile.metrics.Meter;
 import org.eclipse.microprofile.metrics.MetricRegistry;
 import org.eclipse.microprofile.metrics.MetricType;
+import org.eclipse.microprofile.metrics.MetricUnits;
+import org.eclipse.microprofile.metrics.SimpleTimer;
+import org.eclipse.microprofile.metrics.Tag;
 import org.eclipse.microprofile.metrics.Timer;
 
 /**
@@ -53,14 +59,23 @@ public class GrpcMetrics
     /**
      * The registry of vendor metrics.
      */
-    private static final MetricRegistry VENDOR_REGISTRY =
+    static final MetricRegistry VENDOR_REGISTRY =
             RegistryFactory.getInstance().getRegistry(MetricRegistry.Type.VENDOR);
 
     /**
      * The registry of application metrics.
      */
-    private static final MetricRegistry APP_REGISTRY =
+    static final MetricRegistry APP_REGISTRY =
             RegistryFactory.getInstance().getRegistry(MetricRegistry.Type.APPLICATION);
+
+    static final org.eclipse.microprofile.metrics.Metadata GRPC_METER = org.eclipse.microprofile.metrics.Metadata
+            .builder()
+            .withName("grpc.requests.meter")
+            .withDisplayName("Meter for overall gRPC requests")
+            .withDescription("Each gRPC request will mark the meter to see overall throughput")
+            .withType(MetricType.METERED)
+            .withUnit(MetricUnits.NONE)
+            .build();
 
     /**
      * The context key name to use to obtain rules to use when applying metrics.
@@ -119,6 +134,17 @@ public class GrpcMetrics
     }
 
     /**
+     * Set the display name to apply to the metric.
+     *
+     * @param displayName the display name to apply to the metric
+     * @return a {@link io.helidon.grpc.metrics.GrpcMetrics} interceptor
+     * @see org.eclipse.microprofile.metrics.Metadata
+     */
+    public GrpcMetrics displayName(String displayName) {
+        return new GrpcMetrics(metricRule.displayName(displayName));
+    }
+
+    /**
      * Set the units to apply to the metric.
      *
      * @param units the units to apply to the metric
@@ -127,6 +153,25 @@ public class GrpcMetrics
      */
     public GrpcMetrics units(String units) {
         return new GrpcMetrics(metricRule.units(units));
+    }
+
+    /**
+     * Set the reusability of the metric.
+     * @param reusable {@code true} if this metric may be reused
+     * @return a {@link io.helidon.grpc.metrics.GrpcMetrics} interceptor
+     * @see org.eclipse.microprofile.metrics.Metadata
+     */
+    public GrpcMetrics reusable(boolean reusable) {
+        return new GrpcMetrics(metricRule.reusable(reusable));
+    }
+
+    /**
+     * Obtain the {@link org.eclipse.microprofile.metrics.MetricType}.
+     *
+     * @return the {@link org.eclipse.microprofile.metrics.MetricType}
+     */
+    public MetricType metricType() {
+        return metricRule.type();
     }
 
     /**
@@ -181,6 +226,26 @@ public class GrpcMetrics
         return new GrpcMetrics(new MetricsRules(MetricType.TIMER));
     }
 
+    /**
+     * A static factory method to create a {@link GrpcMetrics} instance
+     * to time gRPC method calls.
+     *
+     * @return a {@link GrpcMetrics} instance to time gRPC method calls
+     */
+    public static GrpcMetrics concurrentGauge() {
+        return new GrpcMetrics(new MetricsRules(MetricType.CONCURRENT_GAUGE));
+    }
+
+    /**
+     * A static factory method to create a {@link GrpcMetrics} instance
+     * to time gRPC method calls.
+     *
+     * @return a {@link GrpcMetrics} instance to time gRPC method calls
+     */
+    public static GrpcMetrics simplyTimed() {
+        return new GrpcMetrics(new MetricsRules(MetricType.SIMPLE_TIMER));
+    }
+
     @Override
     public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(ServerCall<ReqT, RespT> call,
                                                                  Metadata headers,
@@ -196,16 +261,28 @@ public class GrpcMetrics
 
         switch (type) {
             case COUNTER:
-                serverCall = new CountedServerCall<>(APP_REGISTRY.counter(rules.metadata(service, methodName)), call);
+                serverCall = new CountedServerCall<>(APP_REGISTRY.counter(
+                        rules.metadata(service, methodName), rules.toTags()), call);
                 break;
             case METERED:
-                serverCall = new MeteredServerCall<>(APP_REGISTRY.meter(rules.metadata(service, methodName)), call);
+                serverCall = new MeteredServerCall<>(APP_REGISTRY.meter(
+                        rules.metadata(service, methodName), rules.toTags()), call);
                 break;
             case HISTOGRAM:
-                serverCall = new HistogramServerCall<>(APP_REGISTRY.histogram(rules.metadata(service, methodName)), call);
+                serverCall = new HistogramServerCall<>(APP_REGISTRY.histogram(
+                        rules.metadata(service, methodName), rules.toTags()), call);
                 break;
             case TIMER:
-                serverCall = new TimedServerCall<>(APP_REGISTRY.timer(rules.metadata(service, methodName)), call);
+                serverCall = new TimedServerCall<>(APP_REGISTRY.timer(
+                        rules.metadata(service, methodName), rules.toTags()), call);
+                break;
+            case SIMPLE_TIMER:
+                serverCall = new SimplyTimedServerCall<>(APP_REGISTRY.simpleTimer(
+                        rules.metadata(service, methodName), rules.toTags()), call);
+                break;
+            case CONCURRENT_GAUGE:
+                serverCall = new ConcurrentGaugeServerCall<>(APP_REGISTRY.concurrentGauge(
+                        rules.metadata(service, methodName), rules.toTags()), call);
                 break;
             case GAUGE:
             case INVALID:
@@ -213,8 +290,7 @@ public class GrpcMetrics
                 serverCall = call;
         }
 
-        serverCall = new MeteredServerCall<>(VENDOR_REGISTRY.meter("grpc.requests.meter"), serverCall);
-        serverCall = new CountedServerCall<>(VENDOR_REGISTRY.counter("grpc.requests.count"), serverCall);
+        serverCall = new MeteredServerCall<>(VENDOR_REGISTRY.meter(GRPC_METER), serverCall);
 
         return next.startCall(serverCall, headers);
     }
@@ -238,7 +314,7 @@ public class GrpcMetrics
          *
          * @param delegate the call to time
          */
-        MetricServerCall(MetricT metric, ServerCall<ReqT, RespT> delegate) {
+        private MetricServerCall(MetricT metric, ServerCall<ReqT, RespT> delegate) {
             super(delegate);
 
             this.metric = metric;
@@ -272,7 +348,7 @@ public class GrpcMetrics
          *
          * @param delegate the call to time
          */
-        TimedServerCall(Timer timer, ServerCall<ReqT, RespT> delegate) {
+        private TimedServerCall(Timer timer, ServerCall<ReqT, RespT> delegate) {
             super(timer, delegate);
 
             this.startNanos = System.nanoTime();
@@ -284,6 +360,65 @@ public class GrpcMetrics
 
             long time = System.nanoTime() - startNanos;
             getMetric().update(time, TimeUnit.NANOSECONDS);
+        }
+    }
+
+    /**
+     * A {@link GrpcMetrics.MeteredServerCall} that captures call times.
+     *
+     * @param <ReqT>   the call request type
+     * @param <RespT>  the call response type
+     */
+    private class SimplyTimedServerCall<ReqT, RespT>
+            extends MetricServerCall<ReqT, RespT, SimpleTimer> {
+        /**
+         * The method start time.
+         */
+        private final long startNanos;
+
+        /**
+         * Create a {@link SimplyTimedServerCall}.
+         *
+         * @param delegate the call to time
+         */
+        private SimplyTimedServerCall(SimpleTimer simpleTimer, ServerCall<ReqT, RespT> delegate) {
+            super(simpleTimer, delegate);
+
+            this.startNanos = System.nanoTime();
+        }
+
+        @Override
+        public void close(Status status, Metadata responseHeaders) {
+            super.close(status, responseHeaders);
+
+            long time = System.nanoTime() - startNanos;
+            getMetric().update(Duration.ofNanos(time));
+        }
+    }
+
+    /**
+     * A {@link GrpcMetrics.MeteredServerCall} that captures call times.
+     *
+     * @param <ReqT>   the call request type
+     * @param <RespT>  the call response type
+     */
+    private class ConcurrentGaugeServerCall<ReqT, RespT>
+            extends MetricServerCall<ReqT, RespT, ConcurrentGauge> {
+
+        /**
+         * Create a {@link SimplyTimedServerCall}.
+         *
+         * @param delegate the call to time
+         */
+        private ConcurrentGaugeServerCall(ConcurrentGauge concurrentGauge, ServerCall<ReqT, RespT> delegate) {
+            super(concurrentGauge, delegate);
+        }
+
+        @Override
+        public void close(Status status, Metadata responseHeaders) {
+            super.close(status, responseHeaders);
+
+            getMetric().inc();
         }
     }
 
@@ -313,7 +448,7 @@ public class GrpcMetrics
          *
          * @param delegate the call to time
          */
-        CountedServerCall(Counter counter, ServerCall<ReqT, RespT> delegate) {
+        private CountedServerCall(Counter counter, ServerCall<ReqT, RespT> delegate) {
             super(counter, delegate);
         }
 
@@ -338,7 +473,7 @@ public class GrpcMetrics
          *
          * @param delegate the call to time
          */
-        MeteredServerCall(Meter meter, ServerCall<ReqT, RespT> delegate) {
+        private MeteredServerCall(Meter meter, ServerCall<ReqT, RespT> delegate) {
             super(meter, delegate);
         }
 
@@ -363,7 +498,7 @@ public class GrpcMetrics
          *
          * @param delegate the call to time
          */
-        HistogramServerCall(Histogram histogram, ServerCall<ReqT, RespT> delegate) {
+        private HistogramServerCall(Histogram histogram, ServerCall<ReqT, RespT> delegate) {
             super(histogram, delegate);
         }
 
@@ -401,6 +536,9 @@ public class GrpcMetrics
      */
     @SuppressWarnings("OptionalUsedAsFieldOrParameterType")
     static class MetricsRules {
+
+        private static final Tag[] EMPTY_TAGS = new Tag[0];
+
         /**
          * The metric type.
          */
@@ -421,12 +559,25 @@ public class GrpcMetrics
         private Optional<String> description = Optional.empty();
 
         /**
+         * The display name of the metric.
+         *
+         * @see org.eclipse.microprofile.metrics.Metadata
+         */
+        private String displayName;
+
+        /**
          * The unit of the metric.
          *
          * @see org.eclipse.microprofile.metrics.Metadata
          * @see org.eclipse.microprofile.metrics.MetricUnits
          */
         private Optional<String> units = Optional.empty();
+
+        /**
+         * The reusability status of this metric.
+         * @see org.eclipse.microprofile.metrics.Metadata
+         */
+        private boolean reusable;
 
         /**
          * The function to use to obtain the metric name.
@@ -441,8 +592,10 @@ public class GrpcMetrics
             this.type = copy.type;
             this.tags = copy.tags;
             this.description = copy.description;
+            this.displayName = copy.displayName;
             this.units = copy.units;
             this.nameFunction = copy.nameFunction;
+            this.reusable = copy.reusable;
         }
 
         /**
@@ -463,13 +616,18 @@ public class GrpcMetrics
          */
         org.eclipse.microprofile.metrics.Metadata metadata(ServiceDescriptor service, String method) {
             String name = nameFunction.orElse(this::defaultName).createName(service, method, type);
-            org.eclipse.microprofile.metrics.Metadata metadata = new org.eclipse.microprofile.metrics.Metadata(name, type);
+            MetadataBuilder builder = org.eclipse.microprofile.metrics.Metadata.builder()
+                    .withName(name)
+                    .withType(type)
+                    .reusable(this.reusable);
 
-            this.tags.ifPresent(metadata::setTags);
-            this.description.ifPresent(metadata::setDescription);
-            this.units.ifPresent(metadata::setUnit);
+            this.description.ifPresent(builder::withDescription);
+            this.units.ifPresent(builder::withUnit);
 
-            return metadata;
+            String displayName = this.displayName;
+            builder.withDisplayName(displayName == null ? name : displayName);
+
+            return builder.build();
         }
 
         private String defaultName(ServiceDescriptor service, String methodName, MetricType metricType) {
@@ -488,6 +646,12 @@ public class GrpcMetrics
             return rules;
         }
 
+        private MetricsRules displayName(String displayName) {
+            MetricsRules rules = new MetricsRules(this);
+            rules.displayName = displayName;
+            return rules;
+        }
+
         private MetricsRules nameFunction(NamingFunction function) {
             MetricsRules rules = new MetricsRules(this);
             rules.nameFunction = Optional.of(function);
@@ -498,6 +662,20 @@ public class GrpcMetrics
             MetricsRules rules = new MetricsRules(this);
             rules.units = Optional.of(units);
             return rules;
+        }
+
+        private MetricsRules reusable(boolean reusable) {
+            MetricsRules rules = new MetricsRules(this);
+            rules.reusable = reusable;
+            return rules;
+        }
+
+        private Tag[] toTags() {
+            return tags.isPresent()
+                    ? tags.get().entrySet().stream()
+                        .map(entry -> new Tag(entry.getKey(), entry.getValue()))
+                        .toArray(Tag[]::new)
+                    : EMPTY_TAGS;
         }
     }
 }

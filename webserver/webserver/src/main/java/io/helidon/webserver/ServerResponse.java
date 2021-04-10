@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2018 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2020 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,9 @@
 package io.helidon.webserver;
 
 import java.nio.ByteBuffer;
-import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Flow.Publisher;
+import java.util.concurrent.Flow.Subscriber;
+import java.util.concurrent.Flow.Subscription;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
@@ -25,7 +27,13 @@ import io.helidon.common.http.AlreadyCompletedException;
 import io.helidon.common.http.DataChunk;
 import io.helidon.common.http.Http;
 import io.helidon.common.http.MediaType;
-import io.helidon.common.reactive.Flow;
+import io.helidon.common.reactive.Single;
+import io.helidon.media.common.MessageBodyFilter;
+import io.helidon.media.common.MessageBodyFilters;
+import io.helidon.media.common.MessageBodyStreamWriter;
+import io.helidon.media.common.MessageBodyWriter;
+import io.helidon.media.common.MessageBodyWriterContext;
+import io.helidon.media.common.MessageBodyWriters;
 
 /**
  * Represents HTTP Response.
@@ -38,7 +46,7 @@ import io.helidon.common.reactive.Flow;
  * <p>
  * Response content (body/payload) can be constructed using {@link #send(Object) send(...)} methods.
  */
-public interface ServerResponse {
+public interface ServerResponse extends MessageBodyFilters, MessageBodyWriters {
 
     /**
      * Returns actual {@link WebServer} instance.
@@ -86,11 +94,29 @@ public interface ServerResponse {
     ResponseHeaders headers();
 
     /**
+     * Get the writer context used to marshall data.
+     *
+     * @return MessageBodyWriterContext
+     */
+    MessageBodyWriterContext writerContext();
+
+    /**
+     * Send a {@link Throwable} and close the response.
+     * Invokes error handlers if defined.
+     *
+     * @param content the {@link Throwable} to send
+     * @return {@code null} when invoked
+     * @throws IllegalStateException if any {@code send(...)} method was already called
+     * @see #send(Object)
+     */
+    Void send(Throwable content);
+
+    /**
      * Send a message and close the response.
      *
      * <h3>Marshalling</h3>
      * Data are marshaled using default or {@link #registerWriter(Class, Function) registered} {@code writer} to the format
-     * of {@link ByteBuffer} {@link Flow.Publisher Publisher}. The last registered compatible writer is used.
+     * of {@link ByteBuffer} {@link Publisher Publisher}. The last registered compatible writer is used.
      * <p>
      * Default writers supports:
      * <ul>
@@ -103,7 +129,7 @@ public interface ServerResponse {
      * <h3>Blocking</h3>
      * The method blocks only during marshalling. It means until {@code registered writer} produce a {@code Publisher} and
      * subscribe HTTP IO implementation on it. If the thread is used for publishing is up to HTTP IO and generated Publisher
-     * implementations. Use returned {@link CompletionStage} to monitor and react on finished sending tryProcess.
+     * implementations. Use returned {@link io.helidon.common.reactive.Single} to monitor and react on finished sending process.
      *
      * @param content a response content to send
      * @param <T>     a type of the content
@@ -111,37 +137,73 @@ public interface ServerResponse {
      * @throws IllegalArgumentException if there is no registered writer for a given type
      * @throws IllegalStateException if any {@code send(...)} method was already called
      */
-    <T> CompletionStage<ServerResponse> send(T content);
+    <T> Single<ServerResponse> send(T content);
 
     /**
-     * Send a message as is without any other marshalling. The response is completed when publisher send
-     * {@link Flow.Subscriber#onComplete()} method to its subscriber.
+     * Send a message with the given entity stream as content and close the response.
+     * @param <T> entity type
+     * @param content entity stream
+     * @param clazz class representing the entity type
+     * @return a completion stage of the response - completed when response is transferred
+     */
+    <T> Single<ServerResponse> send(Publisher<T> content, Class<T> clazz);
+
+    /**
+     * Send a message as is without any other marshalling, registered filters are applied.
+     * The response is completed when publisher send
+     * {@link Subscriber#onComplete()} method to its subscriber.
      * <p>
-     * A single {@link Flow.Subscription Subscriber} subscribes to the provided {@link Flow.Publisher Publisher} during
+     * A single {@link Subscription Subscriber} subscribes to the provided {@link Publisher Publisher} during
      * the method execution.
      *
      * <h3>Blocking</h3>
-     * The method blocks only during marshalling. It means until {@code registered writer} produce a {@code Publisher} and
-     * subscribe HTTP IO implementation on it. If the thread is used for publishing is up to HTTP IO and generated Publisher
-     * implementations. Use returned {@link CompletionStage} to monitor and react on finished sending tryProcess.
+     * If the thread is used for publishing is up to HTTP IO and generated Publisher
+     * implementations. Use returned {@link io.helidon.common.reactive.Single} to monitor and react on finished sending process.
      *
      * @param content a response content publisher
      * @return a completion stage of the response - completed when response is transferred
      * @throws IllegalStateException if any {@code send(...)} method was already called
      */
-    CompletionStage<ServerResponse> send(Flow.Publisher<DataChunk> content);
+    Single<ServerResponse> send(Publisher<DataChunk> content);
+
+
+    /**
+     * Send a message as is without any other marshalling. The response is completed when publisher send
+     * {@link Subscriber#onComplete()} method to its subscriber.
+     * <p>
+     * A single {@link Subscription Subscriber} subscribes to the provided {@link Publisher Publisher} during
+     * the method execution.
+     *
+     * <h3>Blocking</h3>
+     * If the thread is used for publishing is up to HTTP IO and generated Publisher
+     * implementations. Use returned {@link io.helidon.common.reactive.Single} to monitor and react on finished sending process.
+     *
+     * @param content a response content publisher
+     * @param applyFilters if true all registered filters are applied
+     * @return a completion stage of the response - completed when response is transferred
+     * @throws IllegalStateException if any {@code send(...)} method was already called
+     */
+    Single<ServerResponse> send(Publisher<DataChunk> content, boolean applyFilters);
+
+    /**
+     * Send a message using the given marshalling function.
+     *
+     * @param function marshalling function
+     * @return a completion stage of the response - completed when response is transferred
+     */
+    Single<ServerResponse> send(Function<MessageBodyWriterContext, Publisher<DataChunk>> function);
 
     /**
      * Sends an empty response. Do nothing if response was already send.
      *
      * @return a completion stage of the response - completed when response is transferred
      */
-    CompletionStage<ServerResponse> send();
+    Single<ServerResponse> send();
 
     /**
      * Registers a content writer for a given type.
      * <p>
-     * Registered writer is used to marshal response content of given type to the {@link Flow.Publisher Publisher}
+     * Registered writer is used to marshal response content of given type to the {@link Publisher Publisher}
      * of {@link DataChunk response chunks}.
      *
      * @param type     a type of the content. If {@code null} then accepts any type.
@@ -149,13 +211,15 @@ public interface ServerResponse {
      * @param <T>      a type of the content
      * @return this instance of {@link ServerResponse}
      * @throws NullPointerException if {@code function} parameter is {@code null}
+     * @deprecated Since 2.0.0, use {@link #registerWriter(io.helidon.media.common.MessageBodyWriter)} instead
      */
-    <T> ServerResponse registerWriter(Class<T> type, Function<T, Flow.Publisher<DataChunk>> function);
+    @Deprecated(since = "2.0.0")
+    <T> ServerResponse registerWriter(Class<T> type, Function<T, Publisher<DataChunk>> function);
 
     /**
      * Registers a content writer for a given type and media type.
      * <p>
-     * Registered writer is used to marshal response content of given type to the {@link Flow.Publisher Publisher}
+     * Registered writer is used to marshal response content of given type to the {@link Publisher Publisher}
      * of {@link DataChunk response chunks}. It is used only if {@code Content-Type} header is compatible with a given
      * content type or if it is {@code null}. If {@code Content-Type} is {@code null} and it is still possible to modify
      * headers (headers were not send yet), the provided content type will be set.
@@ -166,15 +230,17 @@ public interface ServerResponse {
      * @param <T>         a type of the content
      * @return this instance of {@link ServerResponse}
      * @throws NullPointerException if {@code function} parameter is {@code null}
+     * @deprecated since 2.0.0, use {@link #registerWriter(io.helidon.media.common.MessageBodyWriter)} instead
      */
+    @Deprecated(since = "2.0.0")
     <T> ServerResponse registerWriter(Class<T> type,
                                       MediaType contentType,
-                                      Function<? extends T, Flow.Publisher<DataChunk>> function);
+                                      Function<? extends T, Publisher<DataChunk>> function);
 
     /**
      * Registers a content writer for all accepted contents.
      * <p>
-     * Registered writer is used to marshal response content of given type to the {@link Flow.Publisher Publisher}
+     * Registered writer is used to marshal response content of given type to the {@link Publisher Publisher}
      * of {@link DataChunk response chunks}.
      *
      * @param accept   a predicate to test if content is marshallable by the writer. If {@code null} then accepts any type.
@@ -182,13 +248,15 @@ public interface ServerResponse {
      * @param <T>      a type of the content
      * @return this instance of {@link ServerResponse}
      * @throws NullPointerException if {@code function} parameter is {@code null}
+     * @deprecated since 2.0.0, use {@link #registerWriter(io.helidon.media.common.MessageBodyWriter)} instead
      */
-    <T> ServerResponse registerWriter(Predicate<?> accept, Function<T, Flow.Publisher<DataChunk>> function);
+    @Deprecated
+    <T> ServerResponse registerWriter(Predicate<?> accept, Function<T, Publisher<DataChunk>> function);
 
     /**
      * Registers a content writer for all accepted contents.
      * <p>
-     * Registered writer is used to marshal response content of given type to the {@link Flow.Publisher Publisher}
+     * Registered writer is used to marshal response content of given type to the {@link Publisher Publisher}
      * of {@link DataChunk response chunks}. It is used only if {@code Content-Type} header is compatible with a given
      * content type or if it is {@code null}. If {@code Content-Type} is {@code null} and it is still possible to modify
      * headers (headers were not send yet), the provided content type will be set.
@@ -199,15 +267,17 @@ public interface ServerResponse {
      * @param <T>         a type of the content
      * @return this instance of {@link ServerResponse}
      * @throws NullPointerException if {@code function} parameter is {@code null}
+     * @deprecated since 2.0.0, use {@link #registerWriter(io.helidon.media.common.MessageBodyWriter)} instead
      */
+    @Deprecated
     <T> ServerResponse registerWriter(Predicate<?> accept,
                                       MediaType contentType,
-                                      Function<T, Flow.Publisher<DataChunk>> function);
+                                      Function<T, Publisher<DataChunk>> function);
 
     /**
      * Registers a provider of the new response content publisher - typically a filter.
      * <p>
-     * All response content is always represented by a single {@link Flow.Publisher Publisher}
+     * All response content is always represented by a single {@link Publisher Publisher}
      * of {@link DataChunk response chunks}. This method can be used to filter or completely replace original publisher by
      * a new one with different contract. For example data coding, logging, filtering, caching, etc.
      * <p>
@@ -221,8 +291,19 @@ public interface ServerResponse {
      *                 {@code null} then the result will be ignored.
      * @return this instance of {@link ServerResponse}
      * @throws NullPointerException if parameter {@code function} is {@code null}
+     * @deprecated since 2.0.0, use {@link #registerFilter(io.helidon.media.common.MessageBodyFilter)} instead
      */
-    ServerResponse registerFilter(Function<Flow.Publisher<DataChunk>, Flow.Publisher<DataChunk>> function);
+    @Deprecated
+    ServerResponse registerFilter(Function<Publisher<DataChunk>, Publisher<DataChunk>> function);
+
+    @Override
+    ServerResponse registerFilter(MessageBodyFilter filter);
+
+    @Override
+    ServerResponse registerWriter(MessageBodyWriter<?> writer);
+
+    @Override
+    ServerResponse registerWriter(MessageBodyStreamWriter<?> writer);
 
     /**
      * Completion stage is completed when response is completed.
@@ -231,7 +312,7 @@ public interface ServerResponse {
      *
      * @return a completion stage of the response
      */
-    CompletionStage<ServerResponse> whenSent();
+    Single<ServerResponse> whenSent();
 
     /**
      * A unique correlation ID that is associated with this response and its associated request.

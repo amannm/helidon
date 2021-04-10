@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2021 Oracle and/or its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,14 +24,23 @@ import org.eclipse.microprofile.metrics.annotation.Counted;
  * Class CountedBean.
  */
 @Dependent
-@Counted(monotonic = true)
+@Counted
 public class CountedBean {
 
-    @Counted(monotonic = true)
+    static final String DOOMED_COUNTER = "doomedCounter";
+
+    @Counted
     public void method1() {
     }
 
     // Inherits annotations from class
     public void method2() {
+    }
+
+    public void method3() {
+    }
+
+    @Counted(name = DOOMED_COUNTER, absolute = true)
+    public void method4() {
     }
 }
